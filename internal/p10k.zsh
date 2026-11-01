@@ -2696,7 +2696,7 @@ prompt_dotnet_version() {
   _p9k_prompt_segment "$0" "magenta" "white" 'DOTNET_ICON' 0 '' "$_p9k__ret"
 }
 
-_p9k_prompt_dotnet_init() {
+_p9k_prompt_dotnet_version_init() {
   typeset -g "_p9k__segment_cond_${_p9k__prompt_side}[_p9k__segment_index]"='$commands[dotnet]'
 }
 
