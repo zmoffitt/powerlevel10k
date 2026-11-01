@@ -2242,7 +2242,7 @@ prompt_package() {
           '}'|']')      data[1]=; (( --depth > 0 )) || return;;
           ':')          data[1]=;;
           ',')          data[1]=; field=;;
-          [[:alnum:].]) data=${data##[[:alnum:].]#};;
+          [[:alnum:].+-]) data=${data##[[:alnum:].+-]#};;
           '"')
             local tail=${data##\"([^\"\\]|\\?)#}
             [[ $tail == '"'* ]] || return
