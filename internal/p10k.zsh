@@ -1174,6 +1174,11 @@ function _p9k_parse_aws_config() {
     elif [[ $line == (#b)'[profile'[[:space:]]##([^[:space:]]|[^[:space:]]*[^[:space:]])[[:space:]]#']'[[:space:]]#(|'#'*) ]]; then
       # example: [profile prod]
       profile=${(Q)match[1]}
+    elif [[ $line == [[:space:]]#'['* ]]; then
+      # example: [sso-session corp]
+      # Any other section terminates the current profile so that its `region` (if any)
+      # isn't attributed to the profile that happens to precede it.
+      profile=
     elif [[ $line == (#b)[[:space:]]#region[[:space:]]#=[[:space:]]#([^[:space:]]|[^[:space:]]*[^[:space:]])[[:space:]]# ]]; then
       # example: region = eu-west-1
       if [[ -n $profile ]]; then
