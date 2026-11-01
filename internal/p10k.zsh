@@ -2858,10 +2858,6 @@ _p9k_prompt_rbenv_init() {
   typeset -g "_p9k__segment_cond_${_p9k__prompt_side}[_p9k__segment_index]"='${commands[rbenv]:-${${+functions[rbenv]}:#0}}'
 }
 
-function _p9k_phpenv_global_version() {
-  _p9k_read_word ${PHPENV_ROOT:-$HOME/.phpenv}/version || _p9k__ret=system
-}
-
 function _p9k_scalaenv_global_version() {
   _p9k_read_word ${SCALAENV_ROOT:-$HOME/.scalaenv}/version || _p9k__ret=system
 }
@@ -5853,7 +5849,7 @@ function _p9k_prompt_net_iface_init() {
   typeset -g P9K_IP_RX_BYTES_DELTA=
   typeset -g P9K_IP_TX_RATE=
   typeset -g P9K_IP_RX_RATE=
-  typeset -g _p9__ip_timestamp=
+  typeset -g _p9k__ip_timestamp=
   typeset -g _p9k__vpn_ip_ips=()
   [[ -z $_POWERLEVEL9K_PUBLIC_IP_VPN_INTERFACE ]] && _p9k__public_ip_not_vpn=1
   _p9k__async_segments_compute+='_p9k_worker_invoke net_iface _p9k_prompt_net_iface_compute'
@@ -5936,7 +5932,7 @@ function _p9k_prompt_net_iface_async() {
     fi
     if [[ -n $ip_rx_bytes ]]; then
       if [[ $ip_ip == $P9K_IP_IP && $ifaces[1] == $P9K_IP_INTERFACE ]]; then
-        local -F t='ip_timestamp - _p9__ip_timestamp'
+        local -F t='ip_timestamp - _p9k__ip_timestamp'
         if (( t <= 0 )); then
           ip_tx_rate=${P9K_IP_TX_RATE:-0 B/s}
           ip_rx_rate=${P9K_IP_RX_RATE:-0 B/s}
@@ -5995,7 +5991,7 @@ function _p9k_prompt_net_iface_async() {
   P9K_IP_RX_BYTES=$ip_rx_bytes
   P9K_IP_TX_RATE=$ip_tx_rate
   P9K_IP_RX_RATE=$ip_rx_rate
-  _p9__ip_timestamp=$ip_timestamp
+  _p9k__ip_timestamp=$ip_timestamp
   _p9k__vpn_ip_ips=($vpn_ip_ips)
   _p9k_print_params         \
     _p9k__public_ip_vpn     \
@@ -6008,7 +6004,7 @@ function _p9k_prompt_net_iface_async() {
     P9K_IP_RX_BYTES_DELTA   \
     P9K_IP_TX_RATE          \
     P9K_IP_RX_RATE          \
-    _p9__ip_timestamp       \
+    _p9k__ip_timestamp      \
     _p9k__vpn_ip_ips
   echo -E - 'reset=1'
 }
