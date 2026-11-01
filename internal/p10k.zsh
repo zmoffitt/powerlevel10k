@@ -2459,7 +2459,7 @@ prompt_node_version() {
         done
       fi
     fi
-    _p9k_upglob .node-version -. || file_deps+=($_p9k__parent_dirs[idx]/.node-version)
+    _p9k_upglob .node-version -. || file_deps+=($_p9k__parent_dirs[$?]/.node-version)
   elif (( idx )); then
     file_deps+=($_p9k__parent_dirs[idx]/package.json)
   fi
