@@ -1,6 +1,9 @@
 # vim:ft=zsh ts=2 sw=2 sts=2 et fenc=utf-8
 ################################################################
 # Powerlevel10k Theme
+# https://github.com/zmoffitt/powerlevel10k
+#
+# Forked from Powerlevel10k Theme by Roman Perepelitsa
 # https://github.com/romkatv/powerlevel10k
 #
 # Forked from Powerlevel9k Theme
