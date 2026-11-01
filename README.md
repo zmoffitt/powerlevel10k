@@ -1,11 +1,9 @@
 # Powerlevel10k
-[![Gitter](https://badges.gitter.im/powerlevel10k/community.svg)](
-  https://gitter.im/powerlevel10k/community?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge)
 
-- **THE PROJECT HAS VERY LIMITED SUPPORT**
-- **NO NEW FEATURES ARE IN THE WORKS**
-- **MOST BUGS WILL GO UNFIXED**
-- **HELP REQUESTS WILL BE IGNORED**
+> **This is a fork of [romkatv/powerlevel10k](https://github.com/romkatv/powerlevel10k).**
+> Upstream Powerlevel10k has very limited support: no new features are in the works and most bugs
+> will go unfixed. This fork tracks upstream and carries bug fixes on top of it. See
+> [About this fork](#about-this-fork) for the list of changes.
 
 Powerlevel10k is a theme for Zsh. It emphasizes [speed](#uncompromising-performance),
 [flexibility](#extremely-customizable) and [out-of-the-box experience](#configuration-wizard).
@@ -13,6 +11,7 @@ Powerlevel10k is a theme for Zsh. It emphasizes [speed](#uncompromising-performa
 ![Powerlevel10k](
 https://raw.githubusercontent.com/romkatv/powerlevel10k-media/master/prompt-styles-high-contrast.png)
 
+- [About this fork](#about-this-fork)
 - [Getting started](#getting-started)
 - [Features](#features)
 - [Installation](#installation)
@@ -22,6 +21,33 @@ https://raw.githubusercontent.com/romkatv/powerlevel10k-media/master/prompt-styl
 - [License](#license)
 - [FAQ](#faq)
 - [Troubleshooting](#troubleshooting)
+
+## About this fork
+
+This fork is maintained at [zmoffitt/powerlevel10k](https://github.com/zmoffitt/powerlevel10k). It
+is a drop-in replacement for upstream Powerlevel10k: the configuration format, the wizard and
+`~/.p10k.zsh` are unchanged. Install it with any of the git-based
+[installation methods](#installation) below.
+
+Changes relative to upstream:
+
+- `aws`: do not attribute the region of unrelated sections in `~/.aws/config` to a profile.
+- `dotnet_version`: fix the name of the segment init function.
+- `node_version`: depend on the `.node-version` file that was actually found.
+- `nvm`: do not use `path` as a loop variable in `_p9k_nvm_ls_default`.
+- `package`: accept negative numbers and exponents in `package.json`.
+- `vcs`: fix clamping of `POWERLEVEL9K_VCS_MAX_SYNC_LATENCY_SECONDS`.
+- Fix missing `$` in `[[ _p9k__ret == *%* ]]` checks.
+- Remove duplicate `_p9k_phpenv_global_version`; fix `_p9__ip_timestamp` typo.
+
+Distribution packages ([Homebrew](#homebrew), [Arch Linux](#arch-linux),
+[Alpine Linux](#alpine-linux)), [Prezto](#prezto) and [Fig](#fig) install upstream Powerlevel10k,
+not this fork.
+
+The [gitstatus](gitstatus) directory is a subtree of
+[romkatv/gitstatus](https://github.com/romkatv/gitstatus) and is kept unmodified. Screenshots and
+the [recommended font](#meslo-nerd-font-patched-for-powerlevel10k) are served from upstream's
+[powerlevel10k-media](https://github.com/romkatv/powerlevel10k-media) repository.
 
 ## Getting started
 
@@ -435,15 +461,7 @@ Powerlevel10k.
 ### Manual
 
 ```zsh
-git clone --depth=1 https://github.com/romkatv/powerlevel10k.git ~/powerlevel10k
-echo 'source ~/powerlevel10k/powerlevel10k.zsh-theme' >>~/.zshrc
-```
-
-Users in China can use the official mirror on gitee.com for faster download.<br>
-中国用户可以使用 gitee.com 上的官方镜像加速下载.
-
-```zsh
-git clone --depth=1 https://gitee.com/romkatv/powerlevel10k.git ~/powerlevel10k
+git clone --depth=1 https://github.com/zmoffitt/powerlevel10k.git ~/powerlevel10k
 echo 'source ~/powerlevel10k/powerlevel10k.zsh-theme' >>~/.zshrc
 ```
 
@@ -455,13 +473,7 @@ make sure to disable the current theme in your plugin manager. See
 
 1. Clone the repository:
     ```zsh
-    git clone --depth=1 https://github.com/romkatv/powerlevel10k.git "${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}/themes/powerlevel10k"
-    ```
-    Users in China can use the official mirror on gitee.com for faster download.<br>
-    中国用户可以使用 gitee.com 上的官方镜像加速下载.
-
-    ```zsh
-    git clone --depth=1 https://gitee.com/romkatv/powerlevel10k.git "${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}/themes/powerlevel10k"
+    git clone --depth=1 https://github.com/zmoffitt/powerlevel10k.git "${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}/themes/powerlevel10k"
     ```
 2. Open `~/.zshrc`, find the line that sets `ZSH_THEME`, and change its value to `"powerlevel10k/powerlevel10k"`.
 
@@ -469,55 +481,57 @@ make sure to disable the current theme in your plugin manager. See
 
 Add `zstyle :prezto:module:prompt theme powerlevel10k` to `~/.zpreztorc`.
 
+*Note*: this installs upstream Powerlevel10k, not this fork.
+
 ### Zim
 
-Add `zmodule romkatv/powerlevel10k --use degit` to `~/.zimrc` and run `zimfw install`.
+Add `zmodule zmoffitt/powerlevel10k --use degit` to `~/.zimrc` and run `zimfw install`.
 
 ### Antibody
 
-Add `antibody bundle romkatv/powerlevel10k` to `~/.zshrc`.
+Add `antibody bundle zmoffitt/powerlevel10k` to `~/.zshrc`.
 
 ### Antidote
 
-Add `romkatv/powerlevel10k` to `~/.zsh_plugins.txt`.
+Add `zmoffitt/powerlevel10k` to `~/.zsh_plugins.txt`.
 
 ### Antigen
 
-Add `antigen theme romkatv/powerlevel10k` to `~/.zshrc`. Make sure you have `antigen apply`
+Add `antigen theme zmoffitt/powerlevel10k` to `~/.zshrc`. Make sure you have `antigen apply`
 somewhere after it.
 
 ### Zplug
 
-Add `zplug romkatv/powerlevel10k, as:theme, depth:1` to `~/.zshrc`.
+Add `zplug zmoffitt/powerlevel10k, as:theme, depth:1` to `~/.zshrc`.
 
 ### Zgen
 
-Add `zgen load romkatv/powerlevel10k powerlevel10k` to `~/.zshrc`.
+Add `zgen load zmoffitt/powerlevel10k powerlevel10k` to `~/.zshrc`.
 
 ### Zplugin
 
-Add `zplugin ice depth=1; zplugin light romkatv/powerlevel10k` to `~/.zshrc`.
+Add `zplugin ice depth=1; zplugin light zmoffitt/powerlevel10k` to `~/.zshrc`.
 
 The use of `depth=1` ice is optional. Other types of ice are neither recommended nor officially
 supported by Powerlevel10k.
 
 ### Zinit
 
-Add `zinit ice depth=1; zinit light romkatv/powerlevel10k` to `~/.zshrc`.
+Add `zinit ice depth=1; zinit light zmoffitt/powerlevel10k` to `~/.zshrc`.
 
 The use of `depth=1` ice is optional. Other types of ice are neither recommended nor officially
 supported by Powerlevel10k.
 
 ### Zi
 
-Add `zi ice depth=1; zi light romkatv/powerlevel10k` to `~/.zshrc`.
+Add `zi ice depth=1; zi light zmoffitt/powerlevel10k` to `~/.zshrc`.
 
 The use of `depth=1` ice is optional. Other types of ice are neither recommended nor officially
 supported by Powerlevel10k.
 
 ### Zap
 
-Add `plug "romkatv/powerlevel10k"` to `~/.zshrc`.
+Add `plug "zmoffitt/powerlevel10k"` to `~/.zshrc`.
 
 ### Homebrew
 
@@ -525,6 +539,8 @@ Add `plug "romkatv/powerlevel10k"` to `~/.zshrc`.
 brew install powerlevel10k
 echo "source $(brew --prefix)/share/powerlevel10k/powerlevel10k.zsh-theme" >>~/.zshrc
 ```
+
+*Note*: this installs upstream Powerlevel10k, not this fork.
 
 ### Arch Linux
 
@@ -536,6 +552,8 @@ echo 'source /usr/share/zsh-theme-powerlevel10k/powerlevel10k.zsh-theme' >>~/.zs
 [zsh-theme-powerlevel10k-git](https://aur.archlinux.org/packages/zsh-theme-powerlevel10k-git/)
 referenced above is the official Powerlevel10k package.
 
+*Note*: this installs upstream Powerlevel10k, not this fork.
+
 ### Alpine Linux
 
 ```zsh
@@ -544,10 +562,14 @@ mkdir -p ~/.local/share/zsh/plugins
 ln -s /usr/share/zsh/plugins/powerlevel10k ~/.local/share/zsh/plugins/
 ```
 
+*Note*: this installs upstream Powerlevel10k, not this fork.
+
 ### Fig
 
 Follow the instructions on
 [this page](https://fig.io/plugins/other/powerlevel10k).
+
+*Note*: this installs upstream Powerlevel10k, not this fork.
 
 ## Configuration
 
@@ -807,7 +829,7 @@ the theme. Once you exit Zsh, the container is deleted.
 ```zsh
 docker run -e TERM -e COLORTERM -e LC_ALL=C.UTF-8 -it --rm alpine sh -uec '
   apk add git zsh nano vim
-  git clone --depth=1 https://github.com/romkatv/powerlevel10k.git ~/powerlevel10k
+  git clone --depth=1 https://github.com/zmoffitt/powerlevel10k.git ~/powerlevel10k
   echo "source ~/powerlevel10k/powerlevel10k.zsh-theme" >>~/.zshrc
   cd ~/powerlevel10k
   exec zsh'
@@ -821,7 +843,7 @@ running the Docker command to get access to all prompt styles.
 ## License
 
 Powerlevel10k is released under the
-[MIT license](https://github.com/romkatv/powerlevel10k/blob/master/LICENSE).
+[MIT license](LICENSE).
 
 ## FAQ
 
@@ -919,13 +941,13 @@ The command to update Powerlevel10k depends on how it was installed.
    | [Oh My Zsh](#oh-my-zsh)       | `rm -rf -- "${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}/themes/powerlevel10k"` |
    | [Prezto](#prezto)             | n/a                                                              |
    | [Zim](#zim)                   | `zimfw uninstall`                                                |
-   | [Antigen](#antigen)           | `antigen purge romkatv/powerlevel10k`                            |
-   | [Antidote](#antidote)         | `antidote purge romkatv/powerlevel10k`                           |
+   | [Antigen](#antigen)           | `antigen purge zmoffitt/powerlevel10k`                           |
+   | [Antidote](#antidote)         | `antidote purge zmoffitt/powerlevel10k`                          |
    | [Zplug](#zplug)               | `zplug clean`                                                    |
    | [Zgen](#zgen)                 | `zgen reset`                                                     |
-   | [Zplugin](#zplugin)           | `zplugin delete romkatv/powerlevel10k`                           |
-   | [Zinit](#zinit)               | `zinit delete romkatv/powerlevel10k`                             |
-   | [Zi](#zi)                     | `zi delete romkatv/powerlevel10k`                                |
+   | [Zplugin](#zplugin)           | `zplugin delete zmoffitt/powerlevel10k`                          |
+   | [Zinit](#zinit)               | `zinit delete zmoffitt/powerlevel10k`                            |
+   | [Zi](#zi)                     | `zi delete zmoffitt/powerlevel10k`                               |
    | [Zap](#zap)                   | `zsh -ic 'zap clean'`                                            |
    | [Homebrew](#homebrew)         | `brew uninstall powerlevel10k`                                   |
    | [Arch Linux](#arch-linux)     | `yay -R --noconfirm zsh-theme-powerlevel10k-git`                 |
@@ -946,7 +968,7 @@ The command to update Powerlevel10k depends on how it was installed.
    `target_uname` with the output of the previous command:
    ```sh
    target_uname="replace this with the output of the previous command"
-   git clone --depth=1 https://github.com/romkatv/powerlevel10k.git ~/powerlevel10k
+   git clone --depth=1 https://github.com/zmoffitt/powerlevel10k.git ~/powerlevel10k
    GITSTATUS_CACHE_DIR="$HOME"/powerlevel10k/gitstatus/usrbin ~/powerlevel10k/gitstatus/install -f -s "${target_uname% *}" -m "${target_uname#* }"
    ```
 3. Copy `~/powerlevel10k` from the machine connected to the Internet to the one without Internet
@@ -965,17 +987,11 @@ To update, remove `~/powerlevel10k` on both machines and repeat steps 1-3.
 
 ### Where can I ask for help and report bugs?
 
-The best way to ask for help and to report bugs is to [open an issue](
-  https://github.com/romkatv/powerlevel10k/issues).
+Report bugs in this fork by [opening an issue](https://github.com/zmoffitt/powerlevel10k/issues).
 
-[Gitter](
-  https://gitter.im/powerlevel10k/community?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge)
-is another option.
-
-If all else fails, email roman.perepelitsa@gmail.com.
-
-If necessary, encrypt your communication with [this PGP key](
-  https://api.github.com/users/romkatv/gpg_keys).
+Upstream Powerlevel10k has its own [issue tracker](https://github.com/romkatv/powerlevel10k/issues)
+and [Gitter](https://gitter.im/powerlevel10k/community) community. Upstream has very limited
+support, so do not expect a response there, and do not report bugs that exist only in this fork.
 
 ### Which aspects of shell and terminal does Powerlevel10k affect?
 
@@ -1008,7 +1024,7 @@ Powerlevel10k does not affect:
 1. Run this command:
 ```zsh
 # Add powerlevel10k to the list of Oh My Zsh themes.
-git clone --depth=1 https://github.com/romkatv/powerlevel10k.git "${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}/themes/powerlevel10k"
+git clone --depth=1 https://github.com/zmoffitt/powerlevel10k.git "${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}/themes/powerlevel10k"
 # Replace ZSH_THEME="powerlevel9k/powerlevel9k" with ZSH_THEME="powerlevel10k/powerlevel10k".
 sed -i.bak 's/powerlevel9k/powerlevel10k/g' ~/.zshrc
 # Restart Zsh.
@@ -1381,7 +1397,7 @@ process terminates or runs `exec(3)`.
 
 No, Powerlevel10k is always fast, with any configuration you throw at it. If you have noticeable
 prompt latency when using Powerlevel10k, please
-[open an issue](https://github.com/romkatv/powerlevel10k/issues).
+[open an issue](https://github.com/zmoffitt/powerlevel10k/issues).
 
 ### Is Powerlevel10k fast to load?
 
@@ -1434,7 +1450,7 @@ Almost. There are a few differences.
   - There are dozens more bugs in Powerlevel9k that don't exist in Powerlevel10k.
 
 If you notice any other changes in prompt appearance when switching from Powerlevel9k to
-Powerlevel10k, please [open an issue](https://github.com/romkatv/powerlevel10k/issues).
+Powerlevel10k, please [open an issue](https://github.com/zmoffitt/powerlevel10k/issues).
 
 ### What is the best prompt style in the configuration wizard?
 
@@ -1479,8 +1495,7 @@ prompt style.
 
 ### How to make Powerlevel10k look like robbyrussell Oh My Zsh theme?
 
-Use [this config](
-  https://github.com/romkatv/powerlevel10k/blob/master/config/p10k-robbyrussell.zsh).
+Use [this config](config/p10k-robbyrussell.zsh).
 
 You can either download it, save as `~/.p10k.zsh` and `source ~/.p10k.zsh` from `~/.zshrc`, or
 source `p10k-robbyrussell.zsh` directly from your cloned `powerlevel10k` repository.
@@ -1579,7 +1594,7 @@ When opening a terminal, or starting zsh manually, you may encounter this error 
    - If `typeset -p P9K_VERSION` fails with the error `typeset: no such variable: P9K_VERSION`, run
      the following command:
      ```zsh
-     git clone --depth=1 https://github.com/romkatv/powerlevel10k.git "${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}/themes/powerlevel10k"
+     git clone --depth=1 https://github.com/zmoffitt/powerlevel10k.git "${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}/themes/powerlevel10k"
      ```
 2. Restart Zsh with `exec zsh`.
 
@@ -1877,7 +1892,7 @@ theme (so that you end up with no theme) and then installing Powerlevel10k manua
 2. Install Powerlevel10k manually.
 
 ```zsh
-git clone --depth=1 https://github.com/romkatv/powerlevel10k.git ~/powerlevel10k
+git clone --depth=1 https://github.com/zmoffitt/powerlevel10k.git ~/powerlevel10k
 echo 'source ~/powerlevel10k/powerlevel10k.zsh-theme' >>~/.zshrc
 ```
 
