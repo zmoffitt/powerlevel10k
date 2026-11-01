@@ -789,7 +789,7 @@ _p9k_left_prompt_segment() {
         _p9k_get_icon $1 LEFT_MIDDLE_WHITESPACE ' '
         if [[ -n $_p9k__ret ]]; then
           _p9k_escape $_p9k__ret
-          [[ _p9k__ret == *%* ]] && _p9k__ret+=$style_
+          [[ $_p9k__ret == *%* ]] && _p9k__ret+=$style_
           p+='${${(M)_p9k__e:#11}:+'$_p9k__ret'}'
         fi
       elif (( need_style )); then
@@ -1045,7 +1045,7 @@ _p9k_right_prompt_segment() {
         _p9k_get_icon $1 RIGHT_MIDDLE_WHITESPACE ' '
         if [[ -n $_p9k__ret ]]; then
           _p9k_escape $_p9k__ret
-          [[ _p9k__ret == *%* ]] && _p9k__ret+=$style_
+          [[ $_p9k__ret == *%* ]] && _p9k__ret+=$style_
           p+='${${(M)_p9k__e:#11}:+'$_p9k__ret'}'
         fi
       elif (( need_style )); then
@@ -8271,7 +8271,7 @@ _p9k_init_lines() {
     if [[ $+_POWERLEVEL9K_MULTILINE_FIRST_PROMPT_PREFIX == 1 || $_POWERLEVEL9K_PROMPT_ON_NEWLINE == 1 ]]; then
       _p9k_get_icon '' MULTILINE_FIRST_PROMPT_PREFIX
       if [[ -n $_p9k__ret ]]; then
-        [[ _p9k__ret == *%* ]] && _p9k__ret+=%b%k%f
+        [[ $_p9k__ret == *%* ]] && _p9k__ret+=%b%k%f
         # Not escaped for historical reasons.
         _p9k__ret='${_p9k__1l_frame-"'$_p9k__ret'"}'
         _p9k_line_prefix_left[1]=$_p9k__ret$_p9k_line_prefix_left[1]
@@ -8281,7 +8281,7 @@ _p9k_init_lines() {
     if [[ $+_POWERLEVEL9K_MULTILINE_LAST_PROMPT_PREFIX == 1 || $_POWERLEVEL9K_PROMPT_ON_NEWLINE == 1 ]]; then
       _p9k_get_icon '' MULTILINE_LAST_PROMPT_PREFIX
       if [[ -n $_p9k__ret ]]; then
-        [[ _p9k__ret == *%* ]] && _p9k__ret+=%b%k%f
+        [[ $_p9k__ret == *%* ]] && _p9k__ret+=%b%k%f
         # Not escaped for historical reasons.
         _p9k__ret='${_p9k__'$num_lines'l_frame-"'$_p9k__ret'"}'
         _p9k_line_prefix_left[-1]=$_p9k__ret$_p9k_line_prefix_left[-1]
@@ -8290,14 +8290,14 @@ _p9k_init_lines() {
 
     _p9k_get_icon '' MULTILINE_FIRST_PROMPT_SUFFIX
     if [[ -n $_p9k__ret ]]; then
-      [[ _p9k__ret == *%* ]] && _p9k__ret+=%b%k%f
+      [[ $_p9k__ret == *%* ]] && _p9k__ret+=%b%k%f
       _p9k_line_suffix_right[1]+='${_p9k__1r_frame-'${(qqq)_p9k__ret}'}'
       _p9k_line_never_empty_right[1]=1
     fi
 
     _p9k_get_icon '' MULTILINE_LAST_PROMPT_SUFFIX
     if [[ -n $_p9k__ret ]]; then
-      [[ _p9k__ret == *%* ]] && _p9k__ret+=%b%k%f
+      [[ $_p9k__ret == *%* ]] && _p9k__ret+=%b%k%f
       _p9k_line_suffix_right[-1]+='${_p9k__'$num_lines'r_frame-'${(qqq)_p9k__ret}'}'
       # it's safe to use _p9k_prompt_length on the last line because it cannot have prompt connection
       _p9k_prompt_length $_p9k__ret
@@ -8308,7 +8308,7 @@ _p9k_init_lines() {
       if [[ $+_POWERLEVEL9K_MULTILINE_NEWLINE_PROMPT_PREFIX == 1 || $_POWERLEVEL9K_PROMPT_ON_NEWLINE == 1 ]]; then
         _p9k_get_icon '' MULTILINE_NEWLINE_PROMPT_PREFIX
         if [[ -n $_p9k__ret ]]; then
-          [[ _p9k__ret == *%* ]] && _p9k__ret+=%b%k%f
+          [[ $_p9k__ret == *%* ]] && _p9k__ret+=%b%k%f
           for i in {2..$((num_lines-1))}; do
             # Not escaped for historical reasons.
             _p9k_line_prefix_left[i]='${_p9k__'$i'l_frame-"'$_p9k__ret'"}'$_p9k_line_prefix_left[i]
@@ -8318,7 +8318,7 @@ _p9k_init_lines() {
 
       _p9k_get_icon '' MULTILINE_NEWLINE_PROMPT_SUFFIX
       if [[ -n $_p9k__ret ]]; then
-        [[ _p9k__ret == *%* ]] && _p9k__ret+=%b%k%f
+        [[ $_p9k__ret == *%* ]] && _p9k__ret+=%b%k%f
         for i in {2..$((num_lines-1))}; do
           _p9k_line_suffix_right[i]+='${_p9k__'$i'r_frame-'${(qqq)_p9k__ret}'}'
         done
