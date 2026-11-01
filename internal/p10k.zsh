@@ -789,7 +789,7 @@ _p9k_left_prompt_segment() {
         _p9k_get_icon $1 LEFT_MIDDLE_WHITESPACE ' '
         if [[ -n $_p9k__ret ]]; then
           _p9k_escape $_p9k__ret
-          [[ _p9k__ret == *%* ]] && _p9k__ret+=$style_
+          [[ $_p9k__ret == *%* ]] && _p9k__ret+=$style_
           p+='${${(M)_p9k__e:#11}:+'$_p9k__ret'}'
         fi
       elif (( need_style )); then
@@ -1045,7 +1045,7 @@ _p9k_right_prompt_segment() {
         _p9k_get_icon $1 RIGHT_MIDDLE_WHITESPACE ' '
         if [[ -n $_p9k__ret ]]; then
           _p9k_escape $_p9k__ret
-          [[ _p9k__ret == *%* ]] && _p9k__ret+=$style_
+          [[ $_p9k__ret == *%* ]] && _p9k__ret+=$style_
           p+='${${(M)_p9k__e:#11}:+'$_p9k__ret'}'
         fi
       elif (( need_style )); then
@@ -1174,6 +1174,11 @@ function _p9k_parse_aws_config() {
     elif [[ $line == (#b)'[profile'[[:space:]]##([^[:space:]]|[^[:space:]]*[^[:space:]])[[:space:]]#']'[[:space:]]#(|'#'*) ]]; then
       # example: [profile prod]
       profile=${(Q)match[1]}
+    elif [[ $line == [[:space:]]#'['* ]]; then
+      # example: [sso-session corp]
+      # Any other section terminates the current profile so that its `region` (if any)
+      # isn't attributed to the profile that happens to precede it.
+      profile=
     elif [[ $line == (#b)[[:space:]]#region[[:space:]]#=[[:space:]]#([^[:space:]]|[^[:space:]]*[^[:space:]])[[:space:]]# ]]; then
       # example: region = eu-west-1
       if [[ -n $profile ]]; then
@@ -2237,7 +2242,7 @@ prompt_package() {
           '}'|']')      data[1]=; (( --depth > 0 )) || return;;
           ':')          data[1]=;;
           ',')          data[1]=; field=;;
-          [[:alnum:].]) data=${data##[[:alnum:].]#};;
+          [[:alnum:].+-]) data=${data##[[:alnum:].+-]#};;
           '"')
             local tail=${data##\"([^\"\\]|\\?)#}
             [[ $tail == '"'* ]] || return
@@ -2459,7 +2464,7 @@ prompt_node_version() {
         done
       fi
     fi
-    _p9k_upglob .node-version -. || file_deps+=($_p9k__parent_dirs[idx]/.node-version)
+    _p9k_upglob .node-version -. || file_deps+=($_p9k__parent_dirs[$?]/.node-version)
   elif (( idx )); then
     file_deps+=($_p9k__parent_dirs[idx]/package.json)
   fi
@@ -2545,14 +2550,16 @@ function _p9k_nvm_ls_default() {
   local -a matches=(${^dirs}/${~v}(/N))
   (( $#matches )) || return
 
-  local max path
-  for path in ${(Oa)matches}; do
-    [[ ${path:t} == (#b)v(*).(*).(*) ]] || continue
+  # Don't name the loop variable `path`: it's tied to PATH, so assigning to it changes PATH
+  # (restored on return) and empties the command hash table on every prompt.
+  local max dir
+  for dir in ${(Oa)matches}; do
+    [[ ${dir:t} == (#b)v(*).(*).(*) ]] || continue
     v=${(j::)${(@l:6::0:)match}}
     [[ $v > $max ]] || continue
     max=$v
-    _p9k__ret=${path:t}
-    [[ ${path:h:t} != io.js ]] || _p9k__ret=iojs-$_p9k__ret
+    _p9k__ret=${dir:t}
+    [[ ${dir:h:t} != io.js ]] || _p9k__ret=iojs-$_p9k__ret
   done
 
   [[ -n $max ]]
@@ -2694,7 +2701,7 @@ prompt_dotnet_version() {
   _p9k_prompt_segment "$0" "magenta" "white" 'DOTNET_ICON' 0 '' "$_p9k__ret"
 }
 
-_p9k_prompt_dotnet_init() {
+_p9k_prompt_dotnet_version_init() {
   typeset -g "_p9k__segment_cond_${_p9k__prompt_side}[_p9k__segment_index]"='$commands[dotnet]'
 }
 
@@ -2849,10 +2856,6 @@ prompt_rbenv() {
 
 _p9k_prompt_rbenv_init() {
   typeset -g "_p9k__segment_cond_${_p9k__prompt_side}[_p9k__segment_index]"='${commands[rbenv]:-${${+functions[rbenv]}:#0}}'
-}
-
-function _p9k_phpenv_global_version() {
-  _p9k_read_word ${PHPENV_ROOT:-$HOME/.phpenv}/version || _p9k__ret=system
 }
 
 function _p9k_scalaenv_global_version() {
@@ -5846,7 +5849,7 @@ function _p9k_prompt_net_iface_init() {
   typeset -g P9K_IP_RX_BYTES_DELTA=
   typeset -g P9K_IP_TX_RATE=
   typeset -g P9K_IP_RX_RATE=
-  typeset -g _p9__ip_timestamp=
+  typeset -g _p9k__ip_timestamp=
   typeset -g _p9k__vpn_ip_ips=()
   [[ -z $_POWERLEVEL9K_PUBLIC_IP_VPN_INTERFACE ]] && _p9k__public_ip_not_vpn=1
   _p9k__async_segments_compute+='_p9k_worker_invoke net_iface _p9k_prompt_net_iface_compute'
@@ -5929,7 +5932,7 @@ function _p9k_prompt_net_iface_async() {
     fi
     if [[ -n $ip_rx_bytes ]]; then
       if [[ $ip_ip == $P9K_IP_IP && $ifaces[1] == $P9K_IP_INTERFACE ]]; then
-        local -F t='ip_timestamp - _p9__ip_timestamp'
+        local -F t='ip_timestamp - _p9k__ip_timestamp'
         if (( t <= 0 )); then
           ip_tx_rate=${P9K_IP_TX_RATE:-0 B/s}
           ip_rx_rate=${P9K_IP_RX_RATE:-0 B/s}
@@ -5988,7 +5991,7 @@ function _p9k_prompt_net_iface_async() {
   P9K_IP_RX_BYTES=$ip_rx_bytes
   P9K_IP_TX_RATE=$ip_tx_rate
   P9K_IP_RX_RATE=$ip_rx_rate
-  _p9__ip_timestamp=$ip_timestamp
+  _p9k__ip_timestamp=$ip_timestamp
   _p9k__vpn_ip_ips=($vpn_ip_ips)
   _p9k_print_params         \
     _p9k__public_ip_vpn     \
@@ -6001,7 +6004,7 @@ function _p9k_prompt_net_iface_async() {
     P9K_IP_RX_BYTES_DELTA   \
     P9K_IP_TX_RATE          \
     P9K_IP_RX_RATE          \
-    _p9__ip_timestamp       \
+    _p9k__ip_timestamp      \
     _p9k__vpn_ip_ips
   echo -E - 'reset=1'
 }
@@ -7746,7 +7749,7 @@ _p9k_init_params() {
   # If it takes longer than this to fetch git repo status, display the prompt with a greyed out
   # vcs segment and fix it asynchronously when the results come it.
   _p9k_declare -F POWERLEVEL9K_VCS_MAX_SYNC_LATENCY_SECONDS 0.01
-  (( POWERLEVEL9K_VCS_MAX_SYNC_LATENCY_SECONDS >= 0 )) || (( POWERLEVEL9K_VCS_MAX_SYNC_LATENCY_SECONDS = 0 ))
+  (( _POWERLEVEL9K_VCS_MAX_SYNC_LATENCY_SECONDS >= 0 )) || (( _POWERLEVEL9K_VCS_MAX_SYNC_LATENCY_SECONDS = 0 ))
   _p9k_declare -a POWERLEVEL9K_VCS_BACKENDS -- git
   (( $+commands[git] )) || _POWERLEVEL9K_VCS_BACKENDS=(${_POWERLEVEL9K_VCS_BACKENDS:#git})
   _p9k_declare -b POWERLEVEL9K_VCS_DISABLE_GITSTATUS_FORMATTING 0
@@ -8271,7 +8274,7 @@ _p9k_init_lines() {
     if [[ $+_POWERLEVEL9K_MULTILINE_FIRST_PROMPT_PREFIX == 1 || $_POWERLEVEL9K_PROMPT_ON_NEWLINE == 1 ]]; then
       _p9k_get_icon '' MULTILINE_FIRST_PROMPT_PREFIX
       if [[ -n $_p9k__ret ]]; then
-        [[ _p9k__ret == *%* ]] && _p9k__ret+=%b%k%f
+        [[ $_p9k__ret == *%* ]] && _p9k__ret+=%b%k%f
         # Not escaped for historical reasons.
         _p9k__ret='${_p9k__1l_frame-"'$_p9k__ret'"}'
         _p9k_line_prefix_left[1]=$_p9k__ret$_p9k_line_prefix_left[1]
@@ -8281,7 +8284,7 @@ _p9k_init_lines() {
     if [[ $+_POWERLEVEL9K_MULTILINE_LAST_PROMPT_PREFIX == 1 || $_POWERLEVEL9K_PROMPT_ON_NEWLINE == 1 ]]; then
       _p9k_get_icon '' MULTILINE_LAST_PROMPT_PREFIX
       if [[ -n $_p9k__ret ]]; then
-        [[ _p9k__ret == *%* ]] && _p9k__ret+=%b%k%f
+        [[ $_p9k__ret == *%* ]] && _p9k__ret+=%b%k%f
         # Not escaped for historical reasons.
         _p9k__ret='${_p9k__'$num_lines'l_frame-"'$_p9k__ret'"}'
         _p9k_line_prefix_left[-1]=$_p9k__ret$_p9k_line_prefix_left[-1]
@@ -8290,14 +8293,14 @@ _p9k_init_lines() {
 
     _p9k_get_icon '' MULTILINE_FIRST_PROMPT_SUFFIX
     if [[ -n $_p9k__ret ]]; then
-      [[ _p9k__ret == *%* ]] && _p9k__ret+=%b%k%f
+      [[ $_p9k__ret == *%* ]] && _p9k__ret+=%b%k%f
       _p9k_line_suffix_right[1]+='${_p9k__1r_frame-'${(qqq)_p9k__ret}'}'
       _p9k_line_never_empty_right[1]=1
     fi
 
     _p9k_get_icon '' MULTILINE_LAST_PROMPT_SUFFIX
     if [[ -n $_p9k__ret ]]; then
-      [[ _p9k__ret == *%* ]] && _p9k__ret+=%b%k%f
+      [[ $_p9k__ret == *%* ]] && _p9k__ret+=%b%k%f
       _p9k_line_suffix_right[-1]+='${_p9k__'$num_lines'r_frame-'${(qqq)_p9k__ret}'}'
       # it's safe to use _p9k_prompt_length on the last line because it cannot have prompt connection
       _p9k_prompt_length $_p9k__ret
@@ -8308,7 +8311,7 @@ _p9k_init_lines() {
       if [[ $+_POWERLEVEL9K_MULTILINE_NEWLINE_PROMPT_PREFIX == 1 || $_POWERLEVEL9K_PROMPT_ON_NEWLINE == 1 ]]; then
         _p9k_get_icon '' MULTILINE_NEWLINE_PROMPT_PREFIX
         if [[ -n $_p9k__ret ]]; then
-          [[ _p9k__ret == *%* ]] && _p9k__ret+=%b%k%f
+          [[ $_p9k__ret == *%* ]] && _p9k__ret+=%b%k%f
           for i in {2..$((num_lines-1))}; do
             # Not escaped for historical reasons.
             _p9k_line_prefix_left[i]='${_p9k__'$i'l_frame-"'$_p9k__ret'"}'$_p9k_line_prefix_left[i]
@@ -8318,7 +8321,7 @@ _p9k_init_lines() {
 
       _p9k_get_icon '' MULTILINE_NEWLINE_PROMPT_SUFFIX
       if [[ -n $_p9k__ret ]]; then
-        [[ _p9k__ret == *%* ]] && _p9k__ret+=%b%k%f
+        [[ $_p9k__ret == *%* ]] && _p9k__ret+=%b%k%f
         for i in {2..$((num_lines-1))}; do
           _p9k_line_suffix_right[i]+='${_p9k__'$i'r_frame-'${(qqq)_p9k__ret}'}'
         done
