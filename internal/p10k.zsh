@@ -2545,14 +2545,16 @@ function _p9k_nvm_ls_default() {
   local -a matches=(${^dirs}/${~v}(/N))
   (( $#matches )) || return
 
-  local max path
-  for path in ${(Oa)matches}; do
-    [[ ${path:t} == (#b)v(*).(*).(*) ]] || continue
+  # Don't name the loop variable `path`: it's tied to PATH, so assigning to it changes PATH
+  # (restored on return) and empties the command hash table on every prompt.
+  local max dir
+  for dir in ${(Oa)matches}; do
+    [[ ${dir:t} == (#b)v(*).(*).(*) ]] || continue
     v=${(j::)${(@l:6::0:)match}}
     [[ $v > $max ]] || continue
     max=$v
-    _p9k__ret=${path:t}
-    [[ ${path:h:t} != io.js ]] || _p9k__ret=iojs-$_p9k__ret
+    _p9k__ret=${dir:t}
+    [[ ${dir:h:t} != io.js ]] || _p9k__ret=iojs-$_p9k__ret
   done
 
   [[ -n $max ]]
