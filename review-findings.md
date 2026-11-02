@@ -12,6 +12,8 @@ Everything already fixed in this fork's earlier review (missing `$` in `[[ _p9k_
 
 These are real, reproduced (by a finder and/or verifier, or by me), and user-visible.
 
+Status (branch `fix/review-section-1`): items 1-20 and 22-26 are fixed in this branch. Item 21 (worker zombies) is left as is: the defect does not reproduce on Linux (zsh 5.9), the upstream maintainer confirmed the only proposed fix (PR #2857) is wrong, and no fix could be verified here. For item 3 both mirrors are still tried in parallel; integrity now rests on TLS verification plus the mandatory SHA-256 check from item 2.
+
 | # | Where | Problem | Upstream |
 |---|-------|---------|----------|
 | 1 | `internal/p10k.zsh:7439` | `POWERLEVEL9K_INSTANT_PROMPT=off` is lost when the cached state is restored. `_p9k__instant_prompt_disabled` is only derived inside `_p9k_init_params`, which the `_p9k_restore_state` path skips, so from the third shell start the instant prompt file is re-dumped and shown despite `off`. Fix: derive the flag after `_p9k_restore_state || _p9k_init_cacheable` in `_p9k_init` (or guard `_p9k_do_dump` on `_POWERLEVEL9K_DISABLE_INSTANT_PROMPT`). | unreported; matches the folk fix "delete ~/.cache/p10k-*" |

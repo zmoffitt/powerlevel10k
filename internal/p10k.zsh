@@ -339,12 +339,18 @@ function _p9k_human_readable_bytes() {
     (( n < 1024 )) && break
     (( n /= 1024 ))
   done
+  # Integer arithmetic instead of printf '%f', whose decimal separator depends on
+  # LC_NUMERIC (e.g., "1,76K" in de_DE).
+  local -i i
   if (( n >= 100 )); then
-    printf -v _p9k__ret '%.0f.' $n
+    (( i = n + 0.5 ))
+    _p9k__ret=$i.
   elif (( n >= 10 )); then
-    printf -v _p9k__ret '%.1f' $n
+    (( i = n * 10 + 0.5 ))
+    _p9k__ret=$((i / 10)).$((i % 10))
   else
-    printf -v _p9k__ret '%.2f' $n
+    (( i = n * 100 + 0.5 ))
+    _p9k__ret=$((i / 100)).${(l:2::0:)$((i % 100))}
   fi
   _p9k__ret=${${_p9k__ret%%0#}%.}$suf
 }
@@ -719,7 +725,7 @@ _p9k_left_prompt_segment() {
     fi
     if (( __p9k_sh_glob )); then
       p+="\${_p9k__n:=\${\${(M)\${:-x$bg_color}:#x\$_p9k__bg}:+$((t+3))}}"                    # 3
-      p+="\${_p9k__n:=\${\${(M)\${:-x$bg_color}:#x\$${_p9k__bg:-0}}:+$((t+3))}}"              # 3
+      p+="\${_p9k__n:=\${\${(M)\${:-x$bg_color}:#x\${_p9k__bg:-0}}:+$((t+3))}}"               # 3
     else
       p+="\${_p9k__n:=\${\${(M)\${:-x$bg_color}:#x(\$_p9k__bg|\${_p9k__bg:-0})}:+$((t+3))}}"  # 3
     fi
@@ -1427,12 +1433,22 @@ _p9k_prompt_battery_set_args() {
         # Skip batteries with "Unknown" status: https://github.com/romkatv/powerlevel10k/pull/2562.
         [[ $bat_status == Unknown ]] && continue
         local -i pow=0 full=0
-        if _p9k_read_file $dir/(energy_full|charge_full|charge_counter)(N); then
+        # A glob expands in sorted order, which would pick charge_counter over charge_full
+        # and current_now over power_now. Try the candidates in order of preference and keep
+        # the units of the rate consistent with those of the capacity.
+        local f
+        local -a rates=(power_now current_now)
+        for f in energy_full charge_full charge_counter; do
+          _p9k_read_file $dir/$f(N) || continue
           (( energy_full += ${full::=_p9k__ret} ))
-        fi
-        if _p9k_read_file $dir/(power|current)_now(N) && (( $#_p9k__ret < 9 )); then
+          [[ $f == energy_full ]] || rates=(current_now power_now)
+          break
+        done
+        for f in $rates; do
+          _p9k_read_file $dir/$f(N) && (( $#_p9k__ret < 9 )) || continue
           (( power_now += ${pow::=$_p9k__ret} ))
-        fi
+          break
+        done
         if _p9k_read_file $dir/capacity(N); then
           (( energy_now += _p9k__ret * full / 100. + 0.5 ))
         elif _p9k_read_file $dir/(energy|charge)_now(N); then
@@ -1830,7 +1846,8 @@ prompt_dir() {
               (( n -= len ))
               (( --i ))
             else
-              parts[i]=$'\1'$dir[-n,-1]
+              # With n == 0, $dir[-n,-1] would be the whole string.
+              (( n )) && parts[i]=$'\1'$dir[-n,-1] || parts[i]=$'\1'
               parts[1,i-1]=()
               break
             fi
@@ -1914,7 +1931,19 @@ prompt_dir() {
         (( ++i ))
       fi
       if (( i <= e )); then
-        local mtimes=(${(Oa)_p9k__parent_mtimes:$(($#parts-e)):$((e-i+1))})
+        # _p9k__parent_mtimes holds mtimes from $_p9k__cwd up to the top-level directory.
+        # Reversed, element k is the mtime of the directory made of the first k components
+        # of the path. parts[1] is '' for absolute paths (not a directory) and '~' for paths
+        # under $HOME, so the directory shown as parts[j] is rev[j-off].
+        #
+        # Whether parts[j] can be shortened depends on the listing of its parent, while
+        # folder markers live inside the directory itself, so key the cache on both mtimes.
+        local -a rev=(${(Oa)_p9k__parent_mtimes}) mtimes
+        local -i off=0 j
+        [[ $p[1] == / ]] && off=1
+        for ((j = i; j <= e; ++j)); do
+          mtimes+=${rev[j-off-1]:+${rev[j-off]:+$rev[j-off-1],$rev[j-off]}}
+        done
         local key="${(pj.:.)mtimes}"
       else
         local key=
@@ -2278,9 +2307,26 @@ prompt_package() {
 prompt_detect_virt() {
   local virt="$(systemd-detect-virt 2>/dev/null)"
   if [[ "$virt" == "none" ]]; then
-    local -a inode
-    if zstat -A inode +inode / 2>/dev/null && [[ $inode[1] != 2 ]]; then
-      virt="chroot"
+    local -a root_stat pid1_stat
+    if zstat -A pid1_stat +device +inode /proc/1/root/. 2>/dev/null; then
+      # /proc/1/root is accessible (we are root or own PID 1): compare it with / directly.
+      if zstat -A root_stat +device +inode / 2>/dev/null && [[ $root_stat != $pid1_stat ]]; then
+        virt="chroot"
+      fi
+    else
+      # Fall back to the inode heuristic. Only on ext2/3/4 is the root inode always 2; on
+      # btrfs, XFS, ZFS and others it is not, so apply the heuristic only when / is ext* or
+      # when the filesystem type cannot be determined (no /proc, as in a bare chroot).
+      local fstype
+      if [[ -r /proc/mounts ]]; then
+        local -a mounts=(${(f)"$(</proc/mounts)"})
+        mounts=(${(M)mounts:#[^ ]## / *})
+        fstype=${mounts[-1][(w)3]}
+      fi
+      if [[ $fstype == (|ext<2-4>) ]] && zstat -A root_stat +inode / 2>/dev/null &&
+         [[ $root_stat[1] != 2 ]]; then
+        virt="chroot"
+      fi
     fi
   fi
   if [[ -n "${virt}" ]]; then
@@ -2607,9 +2653,9 @@ _p9k_prompt_nvm_init() {
 prompt_nodeenv() {
   local msg
   if (( _POWERLEVEL9K_NODEENV_SHOW_NODE_VERSION )) && _p9k_cached_cmd 0 '' node --version; then
-    msg="${_p9k__ret//\%/%%} "
+    msg="${(V)_p9k__ret//\%/%%} "
   fi
-  msg+="$_POWERLEVEL9K_NODEENV_LEFT_DELIMITER${${NODE_VIRTUAL_ENV:t}//\%/%%}$_POWERLEVEL9K_NODEENV_RIGHT_DELIMITER"
+  msg+="$_POWERLEVEL9K_NODEENV_LEFT_DELIMITER${(V)${NODE_VIRTUAL_ENV:t}//\%/%%}$_POWERLEVEL9K_NODEENV_RIGHT_DELIMITER"
   _p9k_prompt_segment "$0" "black" "green" 'NODE_ICON' 0 '' "$msg"
 }
 
@@ -2683,7 +2729,7 @@ prompt_nodenv() {
     [[ $v == system ]] && return
   fi
 
-  _p9k_prompt_segment "$0" "black" "green" 'NODE_ICON' 0 '' "${v//\%/%%}"
+  _p9k_prompt_segment "$0" "black" "green" 'NODE_ICON' 0 '' "${(V)v//\%/%%}"
 }
 
 _p9k_prompt_nodenv_init() {
@@ -2692,7 +2738,7 @@ _p9k_prompt_nodenv_init() {
 
 prompt_dotnet_version() {
   if (( _POWERLEVEL9K_DOTNET_VERSION_PROJECT_ONLY )); then
-    _p9k_upglob 'project.json|global.json|packet.dependencies|*.csproj|*.fsproj|*.xproj|*.sln' -. && return
+    _p9k_upglob 'project.json|global.json|paket.dependencies|*.csproj|*.fsproj|*.xproj|*.sln|*.slnx' -. && return
   fi
 
   local cfg
@@ -2774,7 +2820,7 @@ _p9k_prompt_ram_async() {
       (( free_bytes *= _p9k__ram_pagesize ))
     ;;
     BSD)
-      local stat && stat="$(grep -F 'avail memory' /var/run/dmesg.boot 2>/dev/null)" || return
+      local stat && stat="$(grep -F 'avail mem' /var/run/dmesg.boot 2>/dev/null)" || return
       free_bytes=${${(A)=stat}[4]}
     ;;
     *)
@@ -2851,7 +2897,7 @@ prompt_rbenv() {
     [[ $v == system ]] && return
   fi
 
-  _p9k_prompt_segment "$0" "red" "$_p9k_color1" 'RUBY_ICON' 0 '' "${v//\%/%%}"
+  _p9k_prompt_segment "$0" "red" "$_p9k_color1" 'RUBY_ICON' 0 '' "${(V)v//\%/%%}"
 }
 
 _p9k_prompt_rbenv_init() {
@@ -2910,7 +2956,7 @@ prompt_scalaenv() {
     [[ $v == system ]] && return
   fi
 
-  _p9k_prompt_segment "$0" "red" "$_p9k_color1" 'SCALA_ICON' 0 '' "${v//\%/%%}"
+  _p9k_prompt_segment "$0" "red" "$_p9k_color1" 'SCALA_ICON' 0 '' "${(V)v//\%/%%}"
 }
 
 _p9k_prompt_scalaenv_init() {
@@ -2968,7 +3014,7 @@ prompt_phpenv() {
     [[ $v == system ]] && return
   fi
 
-  _p9k_prompt_segment "$0" "magenta" "$_p9k_color1" 'PHP_ICON' 0 '' "${v//\%/%%}"
+  _p9k_prompt_segment "$0" "magenta" "$_p9k_color1" 'PHP_ICON' 0 '' "${(V)v//\%/%%}"
 }
 
 _p9k_prompt_phpenv_init() {
@@ -3029,7 +3075,7 @@ prompt_luaenv() {
     [[ $v == system ]] && return
   fi
 
-  _p9k_prompt_segment "$0" blue "$_p9k_color1" 'LUA_ICON' 0 '' "${v//\%/%%}"
+  _p9k_prompt_segment "$0" blue "$_p9k_color1" 'LUA_ICON' 0 '' "${(V)v//\%/%%}"
 }
 
 _p9k_prompt_luaenv_init() {
@@ -3090,7 +3136,7 @@ prompt_jenv() {
     [[ $v == system ]] && return
   fi
 
-  _p9k_prompt_segment "$0" white red 'JAVA_ICON' 0 '' "${v//\%/%%}"
+  _p9k_prompt_segment "$0" white red 'JAVA_ICON' 0 '' "${(V)v//\%/%%}"
 }
 
 _p9k_prompt_jenv_init() {
@@ -3151,7 +3197,7 @@ prompt_plenv() {
     [[ $v == system ]] && return
   fi
 
-  _p9k_prompt_segment "$0" "blue" "$_p9k_color1" 'PERL_ICON' 0 '' "${v//\%/%%}"
+  _p9k_prompt_segment "$0" "blue" "$_p9k_color1" 'PERL_ICON' 0 '' "${(V)v//\%/%%}"
 }
 
 _p9k_prompt_plenv_init() {
@@ -3170,7 +3216,7 @@ prompt_perlbrew() {
   local v=$PERLBREW_PERL
   (( _POWERLEVEL9K_PERLBREW_SHOW_PREFIX )) || v=${v#*-}
   [[ -n $v ]] || return
-  _p9k_prompt_segment "$0" "blue" "$_p9k_color1" 'PERL_ICON' 0 '' "${v//\%/%%}"
+  _p9k_prompt_segment "$0" "blue" "$_p9k_color1" 'PERL_ICON' 0 '' "${(V)v//\%/%%}"
 }
 
 _p9k_prompt_perlbrew_init() {
@@ -3183,7 +3229,7 @@ _p9k_prompt_perlbrew_init() {
 prompt_chruby() {
   local v=${(M)RUBY_ENGINE:#$~_POWERLEVEL9K_CHRUBY_SHOW_ENGINE_PATTERN}
   [[ $_POWERLEVEL9K_CHRUBY_SHOW_VERSION == 1 && -n $RUBY_VERSION ]] && v+=${v:+ }$RUBY_VERSION
-  _p9k_prompt_segment "$0" "red" "$_p9k_color1" 'RUBY_ICON' 0 '' "${v//\%/%%}"
+  _p9k_prompt_segment "$0" "red" "$_p9k_color1" 'RUBY_ICON' 0 '' "${(V)v//\%/%%}"
 }
 
 _p9k_prompt_chruby_init() {
@@ -3272,7 +3318,7 @@ prompt_rvm() {
   (( _POWERLEVEL9K_RVM_SHOW_GEMSET )) || v=${v%%${rvm_gemset_separator:-@}*}
   (( _POWERLEVEL9K_RVM_SHOW_PREFIX )) || v=${v#*-}
   [[ -n $v ]] || return
-  _p9k_prompt_segment "$0" "240" "$_p9k_color1" 'RUBY_ICON' 0 '' "${v//\%/%%}"
+  _p9k_prompt_segment "$0" "240" "$_p9k_color1" 'RUBY_ICON' 0 '' "${(V)v//\%/%%}"
 }
 
 _p9k_prompt_rvm_init() {
@@ -4266,7 +4312,7 @@ _p9k_prompt_chezmoi_shell_init() {
 }
 
 function instant_prompt_chezmoi_shell() {
-  _p9k_prompt_segment prompt_chezmoi_shell blue $_p9k_color1 CHEZMOI_ICON 1 '$CHEZMOI_ICON' ''
+  _p9k_prompt_segment prompt_chezmoi_shell blue $_p9k_color1 CHEZMOI_ICON 1 '$CHEZMOI' ''
 }
 
 function _p9k_parse_virtualenv_cfg() {
@@ -4583,7 +4629,7 @@ prompt_kubecontext() {
       : ${namespace:=default}
       # gke_my-account_us-east1-a_cluster-01
       # gke_my-account_us-east1_cluster-01
-      if [[ $cluster == (#b)gke_(?*)_(asia|australia|europe|northamerica|southamerica|us)-([a-z]##<->)(-[a-z]|)_(?*) ]]; then
+      if [[ $cluster == (#b)gke_(?*)_(africa|asia|australia|europe|me|northamerica|southamerica|us)-([a-z]##<->)(-[a-z]|)_(?*) ]]; then
         cloud_name=gke
         cloud_account=$match[1]
         cloud_zone=$match[2]-$match[3]$match[4]
@@ -5259,16 +5305,15 @@ function _p9k_taskwarrior_init_data() {
   )
   _p9k_taskwarrior_data_files=($^files(N))
   _p9k_taskwarrior_data_non_files=(${files:|_p9k_taskwarrior_data_files})
-  if (( $#_p9k_taskwarrior_data_files )); then
-    zstat -A stat +mtime -- $_p9k_taskwarrior_data_files 2>/dev/null || stat=(-1)
-    _p9k_taskwarrior_data_sig=${(pj:\0:)stat}$'\0'
-  else
-    _p9k_taskwarrior_data_sig=
-  fi
-
   _p9k_taskwarrior_data_files+=($_p9k_taskwarrior_meta_files)
   _p9k_taskwarrior_data_non_files+=($_p9k_taskwarrior_meta_non_files)
-  _p9k_taskwarrior_data_sig+=$_p9k_taskwarrior_meta_sig
+  # Must be computed exactly like in _p9k_taskwarrior_check_data, over the combined list of
+  # files. Concatenating separately computed data and meta signatures would leave a stray
+  # NUL when there are no meta files, and the signature would never match.
+  if (( $#_p9k_taskwarrior_data_files )); then
+    zstat -A stat +mtime -- $_p9k_taskwarrior_data_files 2>/dev/null || stat=(-1)
+  fi
+  _p9k_taskwarrior_data_sig=${(pj:\0:)stat}$'\0'$TASKRC$'\0'$TASKDATA
 
   local name val
   for name in PENDING OVERDUE; do
@@ -5921,12 +5966,18 @@ function _p9k_prompt_net_iface_async() {
         local -i rx_idx=$header[(Ie)Ibytes]
         local -i tx_idx=$header[(Ie)Obytes]
         if (( rx_idx && tx_idx )); then
-          ip_tx_bytes=0
-          ip_rx_bytes=0
+          # netstat prints one row per address of the interface and every row repeats the
+          # same interface-wide counters, so read them from one row instead of summing.
+          # Rows without an Address field (e.g., the <Link#N> row of lo0) have fewer columns
+          # than the header; pick a row with the full set of columns.
+          local line
           for line in ${lines:1}; do
-            (( ip_rx_bytes += ${line[(w)rx_idx]} ))
-            (( ip_tx_bytes += ${line[(w)tx_idx]} ))
+            (( ${#${=line}} == $#header )) || continue
+            ip_rx_bytes=${line[(w)rx_idx]}
+            ip_tx_bytes=${line[(w)tx_idx]}
+            break
           done
+          [[ $ip_rx_bytes == <-> && $ip_tx_bytes == <-> ]] || { ip_tx_bytes=; ip_rx_bytes=; }
         fi
       fi
     fi
@@ -6186,7 +6237,7 @@ _p9k_dump_instant_prompt() {
   local prompt_dir=${root_dir}/p10k-$user
   local root_file=$root_dir/p10k-instant-prompt-$user.zsh
   local prompt_file=$prompt_dir/prompt-${#_p9k__cwd}
-  [[ -d $prompt_dir ]] || mkdir -p $prompt_dir || return
+  [[ -d $prompt_dir ]] || zf_mkdir -p -- $prompt_dir || return
   [[ -w $root_dir && -w $prompt_dir ]] || return
 
   if [[ ! -e $root_file  ]]; then
@@ -6484,16 +6535,22 @@ _p9k_dump_instant_prompt() {
   else
     local tmpdir=/tmp
   fi
-  typeset -g __p9k_instant_prompt_output=$tmpdir/p10k-instant-prompt-output-${(%):-%n}-$$
+  # The output file lives in a shared temporary directory: give it an unpredictable name,
+  # create it atomically and never follow symlinks.
+  local -i fd_out attempt
+  for ((attempt = 0; attempt < 100; ++attempt)); do
+    typeset -g __p9k_instant_prompt_output=$tmpdir/p10k-instant-prompt-output-${(%):-%n}-$$-$RANDOM$RANDOM
+    sysopen -w -m 600 -o creat,excl,nofollow -u fd_out -- $__p9k_instant_prompt_output 2>/dev/null && break
+  done
+  (( attempt < 100 )) || return
   print -rn -- "${out}${esc}?2004h" || return
   if (( $+commands[stty] )); then
     command stty -icanon 2>/dev/null
   fi
-  local fd_out fd_null
-  sysopen -wo creat,excl -u fd_out -- $__p9k_instant_prompt_output || return
+  local fd_null
   sysopen -ru fd_null /dev/null || return
   exec {__p9k_fd_0}<&0 {__p9k_fd_1}>&1 {__p9k_fd_2}>&2 0<&$fd_null 1>&$fd_out
-  exec 2>&1 {fd_out}>&- {fd_null}>&-
+  exec 2>&1 {fd_null}>&- {fd_out}>&-
   typeset -gi __p9k_instant_prompt_active=1
   if (( _z4h_can_save_restore_screen == 1 )); then
     typeset -g _z4h_saved_screen
@@ -6514,7 +6571,7 @@ _p9k_dump_instant_prompt() {
       -z4h-restore-screen
       unset _z4h_saved_screen
     fi
-    print -rn -- $terminfo[rc]${(%):-%b%k%f%s%u}$terminfo[ed]
+    print -rn -- ${terminfo[rc]//\$\<[0-9]##(|.[0-9]#)[*\/]#\>/}${(%):-%b%k%f%s%u}${terminfo[ed]//\$\<[0-9]##(|.[0-9]#)[*\/]#\>/}
     if [[ -s $__p9k_instant_prompt_output ]]; then
       command cat $__p9k_instant_prompt_output 2>/dev/null
       if (( $1 )); then
@@ -6632,7 +6689,7 @@ _p9k_save_status() {
 
 function _p9k_dump_state() {
   local dir=${__p9k_dump_file:h}
-  [[ -d $dir ]] || mkdir -p -- $dir || return
+  [[ -d $dir ]] || zf_mkdir -p -- $dir || return
   [[ -w $dir ]] || return
   local tmp=$__p9k_dump_file.tmp.$$
   local -i fd
@@ -6713,7 +6770,7 @@ function _p9k_clear_instant_prompt() {
         -z4h-restore-screen
         unset _z4h_saved_screen
       fi
-      print -rn -- $terminfo[rc]${(%):-%b%k%f%s%u}$terminfo[ed]
+      print -rn -- ${terminfo[rc]//\$\<[0-9]##(|.[0-9]#)[*\/]#\>/}${(%):-%b%k%f%s%u}${terminfo[ed]//\$\<[0-9]##(|.[0-9]#)[*\/]#\>/}
       local unexpected=${${content//$'\e[?'<->'c'}//$'\e['<->' q'}
       unexpected=${(S)unexpected//$'\eP'(|*[^$'\e'])($'\e\e')#$'\e\\'}
       unexpected=${(S)unexpected//$'\e'[^$'\a\e']#($'\a'|$'\e\\')}
@@ -6782,7 +6839,7 @@ function _p9k_clear_instant_prompt() {
       -z4h-restore-screen
       unset _z4h_saved_screen
     fi
-    print -rn -- $terminfo[rc]${(%):-%b%k%f%s%u}$terminfo[ed]
+    print -rn -- ${terminfo[rc]//\$\<[0-9]##(|.[0-9]#)[*\/]#\>/}${(%):-%b%k%f%s%u}${terminfo[ed]//\$\<[0-9]##(|.[0-9]#)[*\/]#\>/}
   fi
   prompt_opts=(percent subst sp cr)
   if [[ $_POWERLEVEL9K_DISABLE_INSTANT_PROMPT == 0 && $__p9k_instant_prompt_active == 2 ]]; then
@@ -6822,6 +6879,9 @@ function _p9k_clear_instant_prompt() {
 
 function _p9k_do_dump() {
   eval "$__p9k_intro"
+  # This runs as a zle -F handler. Should zle redraw the prompt while we are here, it must
+  # do so with the user's prompt_subst, not with the no_prompt_subst from __p9k_intro.
+  setopt prompt_subst
   zle -F $1
   exec {1}>&-
   (( _p9k__state_dump_fd )) || return
@@ -8078,9 +8138,15 @@ function _p9k_wrap_widgets() {
     else
       local tmpdir=/tmp
     fi
-    local keymap tmp=$tmpdir/p10k.bindings.$sysparams[pid]
+    local keymap tmp
+    local -i fd attempt
+    for ((attempt = 0; attempt < 100; ++attempt)); do
+      tmp=$tmpdir/p10k.bindings.$sysparams[pid].$RANDOM$RANDOM
+      sysopen -w -m 600 -o creat,excl,nofollow -u fd -- $tmp 2>/dev/null && break
+    done
+    (( attempt < 100 )) || return
     {
-      for keymap in $keymaps; do bindkey -M $keymap; done >$tmp
+      for keymap in $keymaps; do bindkey -M $keymap; done >&$fd
       local -aU widget_list=(
         zle-isearch-exit
         zle-isearch-update
@@ -8093,6 +8159,7 @@ function _p9k_wrap_widgets() {
         ${${${(f)"$(<$tmp)"}##* }:#(*\"|.*)}
       )
     } always {
+      exec {fd}>&-
       zf_rm -f -- $tmp
     }
   fi
@@ -8440,7 +8507,8 @@ _p9k_init_prompt() {
 
   local -i num_lines=$#_p9k_line_segments_left
   if (( $+terminfo[cuu1] )); then
-    _p9k_escape $terminfo[cuu1]
+    # Strip terminfo padding ($<N>), which some terminals (vt100, vt102) carry in cuu1.
+    _p9k_escape ${terminfo[cuu1]//\$\<[0-9]##(|.[0-9]#)[*\/]#\>/}
     if (( __p9k_ksh_arrays )); then
       local scroll=$'${_p9k_t[${_p9k__ruler_i:-1}-1]:+\n'$_p9k__ret'}'
     else
@@ -8612,14 +8680,16 @@ function _p9k_init_cacheable() {
     _p9k_transient_prompt+=$_p9k__ret
     _p9k_transient_prompt+='${${P9K_CONTENT::="❯"}+}'
     _p9k_param prompt_prompt_char_OK_VIINS CONTENT_EXPANSION '${P9K_CONTENT}'
-    _p9k_transient_prompt+='${:-"'$_p9k__ret'"}'
+    # `)` would terminate the enclosing %(?..) ternary; escape it as %). The pattern must be
+    # a bare `)`: prompt expansion does not treat `\)` as a literal parenthesis.
+    _p9k_transient_prompt+='${${:-"'$_p9k__ret'"}//)/%)}'
     _p9k_transient_prompt+=$sep
     _p9k_color prompt_prompt_char_ERROR_VIINS FOREGROUND 196
     _p9k_foreground $_p9k__ret
     _p9k_transient_prompt+=$_p9k__ret
     _p9k_transient_prompt+='${${P9K_CONTENT::="❯"}+}'
     _p9k_param prompt_prompt_char_ERROR_VIINS CONTENT_EXPANSION '${P9K_CONTENT}'
-    _p9k_transient_prompt+='${:-"'$_p9k__ret'"}'
+    _p9k_transient_prompt+='${${:-"'$_p9k__ret'"}//)/%)}'
     _p9k_transient_prompt+=')%b%k%f%s%u'
     _p9k_get_icon '' LEFT_SEGMENT_END_SEPARATOR
     if [[ $_p9k__ret != (| ) ]]; then
@@ -8781,8 +8851,9 @@ function _p9k_init_cacheable() {
   if [[ $#_POWERLEVEL9K_VCS_BACKENDS == 1 && $_POWERLEVEL9K_VCS_BACKENDS[1] == git ]]; then
     local elem line
     local -i i=0 line_idx=0
-    for line in $_p9k_line_segments_left; do
-      (( ++line_idx ))
+    # Iterate by index: `for line in $array` would skip empty lines.
+    for ((line_idx = 1; line_idx <= $#_p9k_line_segments_left; ++line_idx)); do
+      line=$_p9k_line_segments_left[line_idx]
       for elem in ${${(0)line}%_joined}; do
         (( ++i ))
         if [[ $elem == vcs ]]; then
@@ -8798,8 +8869,8 @@ function _p9k_init_cacheable() {
     done
     i=0
     line_idx=0
-    for line in $_p9k_line_segments_right; do
-      (( ++line_idx ))
+    for ((line_idx = 1; line_idx <= $#_p9k_line_segments_right; ++line_idx)); do
+      line=$_p9k_line_segments_right[line_idx]
       for elem in ${${(0)line}%_joined}; do
         (( ++i ))
         if [[ $elem == vcs ]]; then
@@ -8925,6 +8996,10 @@ function _p9k_iterm2_preexec() {
 _p9k_init() {
   _p9k_init_vars
   _p9k_restore_state || _p9k_init_cacheable
+  # _p9k__instant_prompt_disabled is derived from _POWERLEVEL9K_DISABLE_INSTANT_PROMPT in
+  # _p9k_init_params, which _p9k_restore_state skips. Derive it here as well so that
+  # POWERLEVEL9K_INSTANT_PROMPT=off is honored when the cached state is restored.
+  (( _POWERLEVEL9K_DISABLE_INSTANT_PROMPT )) && _p9k__instant_prompt_disabled=1
 
   typeset -g P9K_OS_ICON=$_p9k_os_icon
 
@@ -9106,7 +9181,7 @@ _p9k_deinit() {
   fi
   (( $+_p9k__iterm2_precmd )) && functions[iterm2_precmd]=$_p9k__iterm2_precmd
   (( $+_p9k__iterm2_decorate_prompt )) && functions[iterm2_decorate_prompt]=$_p9k__iterm2_decorate_prompt
-  unset -m '(_POWERLEVEL9K_|P9K_|_p9k_)*~(P9K_SSH|_P9K_SSH_TTY|P9K_TOOLBOX_NAME|P9K_TTY|_P9K_TTY)'
+  unset -m '(_POWERLEVEL9K_|P9K_|_p9k_)*~(P9K_SSH|_P9K_SSH_TTY|P9K_TOOLBOX_NAME|P9K_TTY|_P9K_TTY|P9K_VERSION)'
   [[ -n $__p9k_locale ]] || unset __p9k_locale
 }
 
@@ -9522,7 +9597,7 @@ zmodload zsh/terminfo
 zmodload zsh/zleparameter
 zmodload -F zsh/stat b:zstat
 zmodload -F zsh/net/socket b:zsocket
-zmodload -F zsh/files b:zf_mv b:zf_rm
+zmodload -F zsh/files b:zf_mkdir b:zf_mv b:zf_rm
 
 if [[ $__p9k_dump_file != $__p9k_instant_prompt_dump_file && -n $__p9k_instant_prompt_dump_file ]]; then
   _p9k_delete_instant_prompt

@@ -365,7 +365,9 @@ function _p9k_init_icons() {
         MULTILINE_NEWLINE_PROMPT_PREFIX '\u251C\U2500'                                # ├─
         MULTILINE_LAST_PROMPT_PREFIX   '\u2570\U2500 '                                # ╰─
         APPLE_ICON                     "${CODEPOINT_OF_AWESOME_APPLE:+\\u$CODEPOINT_OF_AWESOME_APPLE$s}"
+        WINDOWS_ICON                   "${CODEPOINT_OF_AWESOME_WINDOWS:+\\u$CODEPOINT_OF_AWESOME_WINDOWS$s}"
         FREEBSD_ICON                   '\U1F608'$q                                    # 😈
+        ANDROID_ICON                   "${CODEPOINT_OF_AWESOME_ANDROID:+\\u$CODEPOINT_OF_AWESOME_ANDROID$s}"
         LINUX_ICON                     "${CODEPOINT_OF_AWESOME_LINUX:+\\u$CODEPOINT_OF_AWESOME_LINUX$s}"
         LINUX_ARCH_ICON                "${CODEPOINT_OF_AWESOME_LINUX:+\\u$CODEPOINT_OF_AWESOME_LINUX$s}"
         LINUX_DEBIAN_ICON              "${CODEPOINT_OF_AWESOME_LINUX:+\\u$CODEPOINT_OF_AWESOME_LINUX$s}"
@@ -440,6 +442,8 @@ function _p9k_init_icons() {
         PYTHON_ICON                    '\U1F40D'                                      # 🐍
         CHEZMOI_ICON                    "${CODEPOINT_OF_AWESOME_HOME:+\\u$CODEPOINT_OF_AWESOME_HOME$s}"
         SWIFT_ICON                     '\uE655'$s                                     # 
+        GO_ICON                        'Go'
+        GOLANG_ICON                    'Go'
         PUBLIC_IP_ICON                 "${CODEPOINT_OF_AWESOME_GLOBE:+\\u$CODEPOINT_OF_AWESOME_GLOBE$s}"
         LOCK_ICON                      "${CODEPOINT_OF_AWESOME_LOCK:+\\u$CODEPOINT_OF_AWESOME_LOCK}"
         NORDVPN_ICON                   "${CODEPOINT_OF_AWESOME_LOCK:+\\u$CODEPOINT_OF_AWESOME_LOCK}"

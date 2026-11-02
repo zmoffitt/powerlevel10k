@@ -580,7 +580,7 @@ function gitstatus_start"${1:-}"() {
         local tmpdir=/tmp
       fi
       local file_prefix=${tmpdir:A}/gitstatus.$name.$EUID
-      file_prefix+=.$sysparams[pid].$EPOCHSECONDS.$((++_GITSTATUS_START_COUNTER))
+      file_prefix+=.$sysparams[pid].$EPOCHSECONDS.$((++_GITSTATUS_START_COUNTER)).$RANDOM
       (( GITSTATUS_ENABLE_LOGGING )) && : ${log_level:=INFO}
       if [[ -n $log_level ]]; then
         xtrace=$file_prefix.xtrace.log
@@ -607,7 +607,11 @@ function gitstatus_start"${1:-}"() {
         if [[ -r /proc/version && "$(</proc/version)" == *Microsoft* ]]; then
           lock_fd=-1
         else
-          print -rn >$file_prefix.lock               || return
+          # The lock file lives in a shared temporary directory: create it atomically and
+          # without following symlinks.
+          local -i tmp_fd
+          sysopen -w -m 600 -o creat,excl,nofollow -u tmp_fd -- $file_prefix.lock || return
+          exec {tmp_fd}>&-
           zsystem flock -f lock_fd $file_prefix.lock || return
           [[ $lock_fd == <1-> ]]                     || return
         fi
