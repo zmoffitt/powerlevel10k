@@ -863,16 +863,19 @@ function gitstatus_stop"${1:-}"() {
     unfunction -- $cleanup
   fi
 
+  # Other plugins can close our file descriptors behind our back and remove their zle
+  # handlers (e.g., zsh-autosuggestions < 0.7.1 did this when it reused a stale fd number).
+  # Teardown must still succeed, so these failures are tolerated rather than reported.
   if (( $+functions[$process] )); then
-    [[ -n $resp_fd ]] && zle -F $resp_fd
+    [[ -n $resp_fd ]] && zle -F $resp_fd 2>/dev/null
     unfunction -- $process
   fi
 
   [[ $daemon_pid  == <1-> ]] && kill -- -$daemon_pid 2>/dev/null
   [[ $file_prefix == /*   ]] && zf_rm -f -- $file_prefix.lock $file_prefix.fifo
   [[ $lock_fd     == <1-> ]] && zsystem flock -u $lock_fd
-  [[ $req_fd      == <1-> ]] && exec {req_fd}>&-
-  [[ $resp_fd     == <1-> ]] && exec {resp_fd}>&-
+  [[ $req_fd      == <1-> ]] && { exec {req_fd}>&-  } 2>/dev/null
+  [[ $resp_fd     == <1-> ]] && { exec {resp_fd}>&- } 2>/dev/null
 
   unset $state_var $req_fd_var $lock_fd_var $resp_fd_var $client_pid_var $daemon_pid_var
   unset $inflight_var $file_prefix_var $dirty_max_index_size_var
