@@ -238,6 +238,21 @@ function consume_input() {
   done 2>/dev/null
 }
 
+# Usage: create_tmp_file <var> <prefix>
+#
+# Creates an empty file with an unpredictable name that starts with <prefix> and stores the
+# name in <var>. Fallback for when mktemp is unavailable.
+function create_tmp_file() {
+  local -i fd attempt
+  for ((attempt = 0; attempt < 100; ++attempt)); do
+    typeset -g $1=$2.$EPOCHREALTIME.$RANDOM
+    sysopen -w -m 600 -o creat,excl,nofollow -u fd -- ${(P)1} 2>/dev/null || continue
+    exec {fd}>&-
+    return 0
+  done
+  return 1
+}
+
 function quit() {
   consume_input
   if [[ $1 == '-c' ]]; then
@@ -1616,7 +1631,7 @@ function ask_config_overwrite() {
       fi
       if (( ! $+commands[mktemp] )) ||
          ! config_backup=$(mktemp $tmpdir/$__p9k_cfg_basename.XXXXXXXXXX 2>/dev/null); then
-        config_backup=$tmpdir/$__p9k_cfg_basename.$EPOCHREALTIME
+        create_tmp_file config_backup $tmpdir/$__p9k_cfg_basename || quit -c
       fi
       cp $__p9k_cfg_path $config_backup || quit -c
       config_backup_u=$tmpdir_u/${(q-)config_backup:t}
@@ -1689,9 +1704,11 @@ function ask_zshrc_edit() {
         fi
         if (( ! $+commands[mktemp] )) ||
            ! zshrc_backup="$(mktemp $tmpdir/.zshrc.XXXXXXXXXX 2>/dev/null)"; then
-          zshrc_backup=$tmpdir/.zshrc.$EPOCHREALTIME
+          create_tmp_file zshrc_backup $tmpdir/.zshrc || quit -c
         fi
-        cp -p $__p9k_zshrc $zshrc_backup                   || quit -c
+        # Some filesystems cannot preserve permissions; fall back to a plain copy.
+        { cp -p $__p9k_zshrc $zshrc_backup 2>/dev/null ||
+          cp $__p9k_zshrc $zshrc_backup }                  || quit -c
         local -i writable=1
         if [[ ! -w $zshrc_backup ]]; then
           chmod u+w -- $zshrc_backup                       || quit -c
@@ -1967,7 +1984,8 @@ function change_zshrc() {
   (( write_zshrc )) || return 0
 
   local tmp=$__p9k_zshrc.${(%):-%n}.tmp.$$
-  [[ ! -e $__p9k_zshrc ]] || cp -p $__p9k_zshrc $tmp || return
+  # Some filesystems cannot preserve permissions; fall back to a plain copy.
+  [[ ! -e $__p9k_zshrc ]] || cp -p $__p9k_zshrc $tmp 2>/dev/null || cp $__p9k_zshrc $tmp || return
 
   {
     local -i writable=1
@@ -2085,7 +2103,7 @@ else
   _p9k_can_configure -q || return
 fi
 
-zmodload zsh/terminfo zsh/datetime || return
+zmodload zsh/terminfo zsh/datetime zsh/system || return
 
 if [[ $ZSH_VERSION == (5.7.<1->*|5.<8->*|<6->.*) && $COLORTERM == (24bit|truecolor) ]]; then
   local -ir has_truecolor=1
