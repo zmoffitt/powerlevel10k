@@ -138,13 +138,15 @@ typeset -grA __p9k_pb_term_skip=(
 #
 # More brokenness with non-standard options (ignore_braces, ignore_close_braces, etc.).
 function _p9k_parse_buffer() {
-  [[ ${2:-0} == <-> ]] || return 2
-
   local rcquotes
   [[ -o rcquotes ]] && rcquotes=rcquotes
 
   eval "$__p9k_intro"
   setopt no_nomatch $rcquotes
+
+  # Must run after `eval "$__p9k_intro"`: with SH_GLOB set in the caller's shell, `<->`
+  # would not be recognized as a pattern.
+  [[ ${2:-0} == <-> ]] || return 2
 
   typeset -ga P9K_COMMANDS=()
 

@@ -253,7 +253,8 @@ END
     if ! command -v mktemp >/dev/null 2>&1 ||
        ! tmpdir="$(command mktemp -d "$tmp"/gitstatus-install.XXXXXXXXXX)"; then
       tmpdir="$tmp/gitstatus-install.tmp.$$"
-      if ! mkdir -p -- "$tmpdir"; then
+      # No -p: fail rather than reuse a directory that somebody else created.
+      if ! mkdir -m 700 -- "$tmpdir" 2>/dev/null; then
         if [ "$tmp" = /tmp ]; then
           local label='directory'
         else
@@ -271,6 +272,8 @@ END
           >&"$e" printf 'Temporary '"$label"' is not writable: \033[4;31m%s\033[0m\n' "$tmp"
           >&"$e" printf '\n'
           >&"$e" printf 'Make it writable, then restart your shell.\n'
+        else
+          >&"$e" printf 'Cannot create temporary directory: \033[4;31m%s\033[0m\n' "$tmpdir"
         fi
         return 1
       fi
@@ -278,6 +281,15 @@ END
 
     if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
       >&"$e" printf 'Please install \033[32mcurl\033[0m or \033[32mwget\033[0m, then restart your shell.\n'
+      return 1
+    fi
+
+    # The downloaded archive is verified against the SHA-256 digest from install.info before
+    # anything from it is executed. Refuse to download if there is no way to verify it.
+    if ! command -v shasum    >/dev/null 2>&1 &&
+       ! command -v sha256sum >/dev/null 2>&1 &&
+       ! command -v sha256    >/dev/null 2>&1; then
+      >&"$e" printf 'Please install \033[32mshasum\033[0m, \033[32msha256sum\033[0m or \033[32msha256\033[0m, then restart your shell.\n'
       return 1
     fi
 
@@ -330,7 +342,9 @@ END
         } || {
           hash=
         }
-        [ "$1" = 1 -a -z "$hash" -o "$hash" = "$sha256" ]
+        # Fail closed: a download whose digest could not be computed is not accepted,
+        # whichever mirror it came from.
+        [ -n "$hash" ] && [ "$hash" = "$sha256" ]
       }
 
       local url1="https://github.com/romkatv/gitstatus/releases/download/$version/$file.tar.gz"
@@ -345,7 +359,7 @@ END
           fi
         fi
         local cmd part url ret
-        for cmd in 'curl -kfsSL' 'wget -qO-' 'curl -q -kfsSL' 'wget --no-config -qO-'; do
+        for cmd in 'curl -fsSL' 'wget -qO-' 'curl -q -fsSL' 'wget --no-config -qO-'; do
           part=0
           while true; do
             if [ "$part" = 2 ]; then
