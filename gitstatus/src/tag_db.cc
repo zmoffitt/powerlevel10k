@@ -83,7 +83,9 @@ struct {
 void ParseOid(unsigned char* oid, const char* begin, const char* end) {
   VERIFY(end >= begin + GIT_OID_HEXSZ);
   for (size_t i = 0; i != GIT_OID_HEXSZ; i += 2) {
-    *oid++ = kUnhex[+begin[i]] << 4 | kUnhex[+begin[i + 1]];
+    // Cast: with signed char a byte >= 0x80 would index before kUnhex.
+    *oid++ = kUnhex[static_cast<unsigned char>(begin[i])] << 4 |
+             kUnhex[static_cast<unsigned char>(begin[i + 1])];
   }
 }
 

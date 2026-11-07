@@ -202,6 +202,15 @@ END
       if [ ! -e "$daemon" ]; then
         daemon="$cache_dir"/"$file"
         [ -e "$daemon" ] || daemon=
+        # A cached binary was verified when it was downloaded; only trust it if nobody else
+        # could have replaced it since. Otherwise download (and verify) a fresh copy.
+        if [ -n "$daemon" ]; then
+          if ! [ -O "$daemon" ] && [ -z "$(command find -H "$daemon" -prune -user 0 2>/dev/null)" ] ||
+             [ -n "$(command find -H "$daemon" "$cache_dir" -prune \( -perm -020 -o -perm -002 \) 2>/dev/null)" ]; then
+            >&2 echo "[gitstatus] warning: ignoring cached $daemon: not owned by you or writable by others"
+            daemon=
+          fi
+        fi
       fi
       if [ -n "$daemon" ]; then
         _gitstatus_install_daemon_found 0 "$@"

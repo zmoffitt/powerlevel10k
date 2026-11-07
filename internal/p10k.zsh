@@ -334,7 +334,9 @@ typeset -gr __p9k_byte_suffix=('B' 'K' 'M' 'G' 'T' 'P' 'E' 'Z' 'Y')
 # 18000 => 17.6K
 function _p9k_human_readable_bytes() {
   typeset -F n=$1
-  local suf
+  local suf sign
+  # The integer rounding below assumes n >= 0 (ip rates go negative when counters reset).
+  (( n < 0 )) && sign=- && (( n = -n ))
   for suf in $__p9k_byte_suffix; do
     (( n < 1024 )) && break
     (( n /= 1024 ))
@@ -352,7 +354,7 @@ function _p9k_human_readable_bytes() {
     (( i = n * 100 + 0.5 ))
     _p9k__ret=$((i / 100)).${(l:2::0:)$((i % 100))}
   fi
-  _p9k__ret=${${_p9k__ret%%0#}%.}$suf
+  _p9k__ret=$sign${${_p9k__ret%%0#}%.}$suf
 }
 
 if [[ $ZSH_VERSION == (5.<4->*|<6->.*) ]]; then
@@ -8167,24 +8169,27 @@ function _p9k_wrap_widgets() {
       tmp=$tmpdir/p10k.bindings.$sysparams[pid].$RANDOM$RANDOM
       sysopen -w -m 600 -o creat,excl,nofollow -u fd -- $tmp 2>/dev/null && break
     done
-    (( attempt < 100 )) || return
-    {
-      for keymap in $keymaps; do bindkey -M $keymap; done >&$fd
-      local -aU widget_list=(
-        zle-isearch-exit
-        zle-isearch-update
-        zle-line-init
-        zle-line-finish
-        zle-history-line-set
-        zle-keymap-select
-        send-break
-        $_POWERLEVEL9K_HOOK_WIDGETS
-        ${${${(f)"$(<$tmp)"}##* }:#(*\"|.*)}
-      )
-    } always {
-      exec {fd}>&-
-      zf_rm -f -- $tmp
-    }
+    (( attempt < 100 )) || tmp=
+    local -aU widget_list=(
+      zle-isearch-exit
+      zle-isearch-update
+      zle-line-init
+      zle-line-finish
+      zle-history-line-set
+      zle-keymap-select
+      send-break
+      $_POWERLEVEL9K_HOOK_WIDGETS
+    )
+    # Without a temp file, still wrap the widgets above; only the bindkey-derived ones are lost.
+    if [[ -n $tmp ]]; then
+      {
+        for keymap in $keymaps; do bindkey -M $keymap; done >&$fd
+        widget_list+=(${${${(f)"$(<$tmp)"}##* }:#(*\"|.*)})
+      } always {
+        exec {fd}>&-
+        zf_rm -f -- $tmp
+      }
+    fi
   fi
 
   local widget
