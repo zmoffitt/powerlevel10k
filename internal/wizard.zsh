@@ -1706,9 +1706,9 @@ function ask_zshrc_edit() {
            ! zshrc_backup="$(mktemp $tmpdir/.zshrc.XXXXXXXXXX 2>/dev/null)"; then
           create_tmp_file zshrc_backup $tmpdir/.zshrc || quit -c
         fi
-        # Some filesystems cannot preserve permissions; fall back to a plain copy.
-        { cp -p $__p9k_zshrc $zshrc_backup 2>/dev/null ||
-          cp $__p9k_zshrc $zshrc_backup }                  || quit -c
+        # No -p: the backup lives in a shared temporary directory and must keep the 0600 mode
+        # it was created with rather than take the mode of ~/.zshrc.
+        cp -- $__p9k_zshrc $zshrc_backup                   || quit -c
         local -i writable=1
         if [[ ! -w $zshrc_backup ]]; then
           chmod u+w -- $zshrc_backup                       || quit -c
