@@ -1,6 +1,6 @@
 # invoked in worker: _p9k_worker_main <pgid>
 function _p9k_worker_main() {
-  mkfifo -- $_p9k__worker_file_prefix.fifo || return
+  mkfifo -m 600 -- $_p9k__worker_file_prefix.fifo || return
   echo -nE - s$_p9k_worker_pgid$'\x1e'     || return
   exec <$_p9k__worker_file_prefix.fifo     || return
   zf_rm -- $_p9k__worker_file_prefix.fifo  || return
@@ -187,12 +187,14 @@ function _p9k_worker_start() {
     else
       local tmpdir=/tmp
     fi
-    _p9k__worker_file_prefix=$tmpdir/p10k.worker.$EUID.$sysparams[pid].$EPOCHSECONDS
+    _p9k__worker_file_prefix=$tmpdir/p10k.worker.$EUID.$sysparams[pid].$EPOCHSECONDS.$RANDOM$RANDOM
 
     sysopen -r -o cloexec -u _p9k__worker_resp_fd <(
       exec 0</dev/null
       if [[ -n $_POWERLEVEL9K_WORKER_LOG_LEVEL ]]; then
-        exec 2>$_p9k__worker_file_prefix.log
+        local -i log_fd
+        sysopen -w -m 600 -o creat,excl,nofollow -u log_fd -- $_p9k__worker_file_prefix.log || return
+        exec 2>&$log_fd {log_fd}>&-
         setopt xtrace
       else
         exec 2>/dev/null

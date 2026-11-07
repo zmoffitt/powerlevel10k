@@ -1938,11 +1938,13 @@ prompt_dir() {
         #
         # Whether parts[j] can be shortened depends on the listing of its parent, while
         # folder markers live inside the directory itself, so key the cache on both mtimes.
-        local -a rev=(${(Oa)_p9k__parent_mtimes}) mtimes
-        local -i off=0 j
-        [[ $p[1] == / ]] && off=1
+        local -a mtimes
+        local -i j k
         for ((j = i; j <= e; ++j)); do
-          mtimes+=${rev[j-off-1]:+${rev[j-off]:+$rev[j-off-1],$rev[j-off]}}
+          # parts[j] is _p9k__parent_mtimes[k] and its parent is [k+1], counting from the end, so
+          # this also holds for named directories and absolute paths under $HOME.
+          k=$(($#parts - j + 1))
+          mtimes+=${_p9k__parent_mtimes[k+1]:+${_p9k__parent_mtimes[k]:+$_p9k__parent_mtimes[k+1],$_p9k__parent_mtimes[k]}}
         done
         local key="${(pj.:.)mtimes}"
       else
@@ -2307,10 +2309,12 @@ prompt_package() {
 prompt_detect_virt() {
   local virt="$(systemd-detect-virt 2>/dev/null)"
   if [[ "$virt" == "none" ]]; then
-    local -a root_stat pid1_stat
-    if zstat -A pid1_stat +device +inode /proc/1/root/. 2>/dev/null; then
+    local -A root_stat pid1_stat
+    if zstat -H pid1_stat /proc/1/root/. 2>/dev/null; then
       # /proc/1/root is accessible (we are root or own PID 1): compare it with / directly.
-      if zstat -A root_stat +device +inode / 2>/dev/null && [[ $root_stat != $pid1_stat ]]; then
+      # zstat accepts only one +element, hence -H.
+      if zstat -H root_stat / 2>/dev/null &&
+         [[ $root_stat[device]:$root_stat[inode] != $pid1_stat[device]:$pid1_stat[inode] ]]; then
         virt="chroot"
       fi
     else
@@ -2323,8 +2327,9 @@ prompt_detect_virt() {
         mounts=(${(M)mounts:#[^ ]## / *})
         fstype=${mounts[-1][(w)3]}
       fi
-      if [[ $fstype == (|ext<2-4>) ]] && zstat -A root_stat +inode / 2>/dev/null &&
-         [[ $root_stat[1] != 2 ]]; then
+      local -a root_ino
+      if [[ $fstype == (|ext<2-4>) ]] && zstat -A root_ino +inode / 2>/dev/null &&
+         [[ $root_ino[1] != 2 ]]; then
         virt="chroot"
       fi
     fi
@@ -2743,6 +2748,14 @@ prompt_dotnet_version() {
 
   local cfg
   _p9k_upglob global.json -. || cfg=$_p9k__parent_dirs[$?]/global.json
+  if [[ -n $cfg ]]; then
+    # "sdk": {"paths": [...]} makes the dotnet host load an SDK, and native code, from
+    # directories inside the project. Don't run it for an untrusted checkout.
+    [[ -f $cfg ]] || return
+    local json
+    { json="$(<$cfg)" } 2>/dev/null || return
+    [[ $json == *'"paths"'* ]] && return
+  fi
   _p9k_cached_cmd 0 "$cfg" dotnet --version || return
   _p9k_prompt_segment "$0" "magenta" "white" 'DOTNET_ICON' 0 '' "$_p9k__ret"
 }
@@ -5618,6 +5631,7 @@ function _p9k_asdf_parse_version_file() {
   local file=$1
   local is_legacy=$2
   local -a stat
+  [[ -f $file ]] || return  # a FIFO or device named like a version file would block the prompt
   zstat -A stat +mtime $file 2>/dev/null || return
   if (( is_legacy )); then
     local plugin has_parse
@@ -6616,6 +6630,7 @@ _p9k_dump_instant_prompt() {
       zf_rm -f -- $root_file.zwc          || return
       zf_mv -f -- $tmp $root_file         || return
       zcompile -R -- $tmp.zwc $root_file  || return
+      zf_chmod 600 $tmp.zwc               || return
       zf_mv -f -- $tmp.zwc $root_file.zwc || return
     } always {
       (( $? )) && zf_rm -f -- $tmp $tmp.zwc 2>/dev/null
@@ -6716,6 +6731,7 @@ function _p9k_dump_state() {
     zf_rm -f -- $__p9k_dump_file.zwc          || return
     zf_mv -f -- $tmp $__p9k_dump_file         || return
     zcompile -R -- $tmp.zwc $__p9k_dump_file  || return
+    zf_chmod 600 $tmp.zwc                     || return
     zf_mv -f -- $tmp.zwc $__p9k_dump_file.zwc || return
   } always {
     (( $? )) && zf_rm -f -- $tmp $tmp.zwc 2>/dev/null
@@ -6894,6 +6910,8 @@ function _p9k_do_dump() {
     _p9k__instant_prompt_sig=$_p9k__cwd:$P9K_SSH:${(%):-%#}
     _p9k_set_instant_prompt
     _p9k_dump_instant_prompt
+    # The set is persisted in the state dump; keep it (and the list of visited dirs) bounded.
+    (( $#_p9k_dumped_instant_prompt_sigs < 256 )) || _p9k_dumped_instant_prompt_sigs=()
     _p9k_dumped_instant_prompt_sigs[$_p9k__instant_prompt_sig]=1
   fi
   _p9k_dump_state
@@ -8643,6 +8661,16 @@ function _p9k_set_os() {
   _p9k_os_icon=$_p9k__ret
 }
 
+# Appends the prompt_char content expansion in $_p9k__ret to $_p9k_transient_prompt, which is
+# inside a %(?..) ternary.
+function _p9k_transient_prompt_add_content() {
+  if [[ $_p9k__ret == *'%'[\(\)]* ]]; then
+    _p9k_transient_prompt+='${:-"'$_p9k__ret'"}'
+  else
+    _p9k_transient_prompt+='${${:-"'$_p9k__ret'"}//)/%)}'
+  fi
+}
+
 function _p9k_init_cacheable() {
   _p9k_init_icons
   _p9k_init_params
@@ -8686,15 +8714,16 @@ function _p9k_init_cacheable() {
     _p9k_transient_prompt+='${${P9K_CONTENT::="❯"}+}'
     _p9k_param prompt_prompt_char_OK_VIINS CONTENT_EXPANSION '${P9K_CONTENT}'
     # `)` would terminate the enclosing %(?..) ternary; escape it as %). The pattern must be
-    # a bare `)`: prompt expansion does not treat `\)` as a literal parenthesis.
-    _p9k_transient_prompt+='${${:-"'$_p9k__ret'"}//)/%)}'
+    # a bare `)`: prompt expansion does not treat `\)` as a literal parenthesis. Templates that
+    # already use prompt parentheses (`%(!.#.❯)`, or an escaped `%)`) are spliced as is.
+    _p9k_transient_prompt_add_content
     _p9k_transient_prompt+=$sep
     _p9k_color prompt_prompt_char_ERROR_VIINS FOREGROUND 196
     _p9k_foreground $_p9k__ret
     _p9k_transient_prompt+=$_p9k__ret
     _p9k_transient_prompt+='${${P9K_CONTENT::="❯"}+}'
     _p9k_param prompt_prompt_char_ERROR_VIINS CONTENT_EXPANSION '${P9K_CONTENT}'
-    _p9k_transient_prompt+='${${:-"'$_p9k__ret'"}//)/%)}'
+    _p9k_transient_prompt_add_content
     _p9k_transient_prompt+=')%b%k%f%s%u'
     _p9k_get_icon '' LEFT_SEGMENT_END_SEPARATOR
     if [[ $_p9k__ret != (| ) ]]; then
@@ -9602,7 +9631,7 @@ zmodload zsh/terminfo
 zmodload zsh/zleparameter
 zmodload -F zsh/stat b:zstat
 zmodload -F zsh/net/socket b:zsocket
-zmodload -F zsh/files b:zf_mkdir b:zf_mv b:zf_rm
+zmodload -F zsh/files b:zf_chmod b:zf_mkdir b:zf_mv b:zf_rm
 
 if [[ $__p9k_dump_file != $__p9k_instant_prompt_dump_file && -n $__p9k_instant_prompt_dump_file ]]; then
   _p9k_delete_instant_prompt
@@ -9610,7 +9639,7 @@ if [[ $__p9k_dump_file != $__p9k_instant_prompt_dump_file && -n $__p9k_instant_p
   zf_rm -f -- $__p9k_instant_prompt_dump_file{,.zwc} 2>/dev/null
 fi
 
-typeset -g P9K_VERSION=1.20.19-zm.1
+typeset -g P9K_VERSION=1.20.19-zm.2
 
 if [[ ${VSCODE_SHELL_INTEGRATION-} == <1-> && ${+__p9k_force_term_shell_integration} == 0 ]]; then
   typeset -gri __p9k_force_term_shell_integration=1
