@@ -33,7 +33,10 @@ constexpr char kUnreadable = '?';
 void SafePrint(std::ostream& strm, StringView s) {
   for (size_t i = 0; i != s.len; ++i) {
     char c = s.ptr[i];
-    strm << (c > 127 || std::isprint(c) ? c : kUnreadable);
+    // Compare as unsigned: with signed char `c > 127` is never true, and std::isprint of a
+    // negative value is undefined.
+    unsigned char u = static_cast<unsigned char>(c);
+    strm << (u > 127 || std::isprint(u) ? c : kUnreadable);
   }
 }
 

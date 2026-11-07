@@ -43,7 +43,7 @@ Request ParseRequest(const std::string& s) {
   res.id.assign(begin, sep);
 
   begin = sep + 1;
-  if (*begin == ':') {
+  if (begin != end && *begin == ':') {
     res.from_dotgit = true;
     ++begin;
   }
