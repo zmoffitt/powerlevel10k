@@ -2641,7 +2641,7 @@ prompt_nvm() {
     ! _p9k_nvm_ls_default                    ||
     [[ $_p9k__ret != $current ]]             ||
     return
-  _p9k_prompt_segment "$0" "magenta" "black" 'NODE_ICON' 0 '' "${${current#v}//\%/%%}"
+  _p9k_prompt_segment "$0" "magenta" "black" 'NODE_ICON' 0 '' "${(V)${current#v}//\%/%%}"
 }
 
 _p9k_prompt_nvm_init() {
@@ -4484,7 +4484,7 @@ function _p9k_pyenv_compute() {
 # https://github.com/pyenv/pyenv#choosing-the-python-version
 prompt_pyenv() {
   _p9k_pyenv_compute || return
-  _p9k_prompt_segment "$0" "blue" "$_p9k_color1" 'PYTHON_ICON' 0 '' "${_p9k__pyenv_version//\%/%%}"
+  _p9k_prompt_segment "$0" "blue" "$_p9k_color1" 'PYTHON_ICON' 0 '' "${(V)_p9k__pyenv_version//\%/%%}"
 }
 
 _p9k_prompt_pyenv_init() {
@@ -4544,7 +4544,7 @@ prompt_goenv() {
     [[ $v == system ]] && return
   fi
 
-  _p9k_prompt_segment "$0" "blue" "$_p9k_color1" 'GO_ICON' 0 '' "${v//\%/%%}"
+  _p9k_prompt_segment "$0" "blue" "$_p9k_color1" 'GO_ICON' 0 '' "${(V)v//\%/%%}"
 }
 
 _p9k_prompt_goenv_init() {
@@ -5750,7 +5750,7 @@ function prompt_asdf() {
     fi
 
     _p9k_get_icon $0_$upper ${upper}_ICON $plugin
-    _p9k_prompt_segment $0_$upper green $_p9k_color1 $'\1'$_p9k__ret 0 '' ${version//\%/%%}
+    _p9k_prompt_segment $0_$upper green $_p9k_color1 $'\1'$_p9k__ret 0 '' ${(V)version//\%/%%}
   done
 }
 
@@ -6230,7 +6230,7 @@ _p9k_set_instant_prompt() {
   [[ -n $RPROMPT ]] || unset RPROMPT
 }
 
-typeset -gri __p9k_instant_prompt_version=48
+typeset -gri __p9k_instant_prompt_version=49
 
 _p9k_dump_instant_prompt() {
   local user=${(%):-%n}
@@ -6238,8 +6238,9 @@ _p9k_dump_instant_prompt() {
   local prompt_dir=${root_dir}/p10k-$user
   local root_file=$root_dir/p10k-instant-prompt-$user.zsh
   local prompt_file=$prompt_dir/prompt-${#_p9k__cwd}
+  [[ $root_dir == /* ]] || return
   [[ -d $prompt_dir ]] || zf_mkdir -p -- $prompt_dir || return
-  [[ -w $root_dir && -w $prompt_dir ]] || return
+  [[ -w $root_dir && -w $prompt_dir && -O $prompt_dir ]] || return
 
   if [[ ! -e $root_file  ]]; then
     local tmp=$root_file.tmp.$$
@@ -6309,6 +6310,7 @@ _p9k_dump_instant_prompt() {
     typeset -gi __p9k_instant_prompt_sourced='$__p9k_instant_prompt_version'
     return 1
   fi
+  [[ -O $prompt_file ]] || return
   { content="$(<$prompt_file)" } 2>/dev/null || return
   local tail=${content##*$rs$key$us}
   if (( ${#tail} == ${#content} )); then
@@ -6558,7 +6560,8 @@ _p9k_dump_instant_prompt() {
     -z4h-save-screen
   fi
   typeset -g __p9k_instant_prompt_dump_file=${XDG_CACHE_HOME:-~/.cache}/p10k-dump-${(%):-%n}.zsh
-  if builtin source $__p9k_instant_prompt_dump_file 2>/dev/null && (( $+functions[_p9k_preinit] )); then
+  if [[ $__p9k_instant_prompt_dump_file == /* && -O $__p9k_instant_prompt_dump_file ]] &&
+     builtin source $__p9k_instant_prompt_dump_file 2>/dev/null && (( $+functions[_p9k_preinit] )); then
     _p9k_preinit
   fi
   function _p9k_instant_prompt_cleanup() {
@@ -6690,6 +6693,7 @@ _p9k_save_status() {
 
 function _p9k_dump_state() {
   local dir=${__p9k_dump_file:h}
+  [[ $dir == /* ]] || return
   [[ -d $dir ]] || zf_mkdir -p -- $dir || return
   [[ -w $dir ]] || return
   local tmp=$__p9k_dump_file.tmp.$$
@@ -9606,7 +9610,7 @@ if [[ $__p9k_dump_file != $__p9k_instant_prompt_dump_file && -n $__p9k_instant_p
   zf_rm -f -- $__p9k_instant_prompt_dump_file{,.zwc} 2>/dev/null
 fi
 
-typeset -g P9K_VERSION=1.20.19
+typeset -g P9K_VERSION=1.20.19-zm.1
 
 if [[ ${VSCODE_SHELL_INTEGRATION-} == <1-> && ${+__p9k_force_term_shell_integration} == 0 ]]; then
   typeset -gri __p9k_force_term_shell_integration=1
