@@ -7282,7 +7282,9 @@ _p9k_precmd_impl() {
 
   if (( fast_vcs && _p9k_vcs_index && $+GITSTATUS_DAEMON_PID_POWERLEVEL9K )); then
     if (( $+_p9k__vcs_timeout )); then
-      (( _p9k__vcs_timeout = _POWERLEVEL9K_VCS_MAX_SYNC_LATENCY_SECONDS + start_time - EPOCHREALTIME ))
+      # Cap, don't overwrite: _p9k_vcs_gitstatus stores 0 for slow repos and the first prompt.
+      local -F vcs_timeout='_POWERLEVEL9K_VCS_MAX_SYNC_LATENCY_SECONDS + start_time - EPOCHREALTIME'
+      (( vcs_timeout < _p9k__vcs_timeout )) && (( _p9k__vcs_timeout = vcs_timeout ))
       (( _p9k__vcs_timeout >= 0 )) || (( _p9k__vcs_timeout = 0 ))
       gitstatus_process_results_p9k_ -t $_p9k__vcs_timeout POWERLEVEL9K
     fi
@@ -7309,7 +7311,7 @@ _p9k_trapint() {
 
 _p9k_precmd() {
   __p9k_new_status=$?
-  __p9k_new_pipestatus=($pipestatus)
+  __p9k_new_pipestatus=("${pipestatus[@]}")
 
   trap ":" INT
 
@@ -7464,7 +7466,7 @@ _p9k_init_vars() {
   typeset -gi _p9k__can_hide_cursor=$(( $+terminfo[civis] && $+terminfo[cnorm] ))
   if (( _p9k__can_hide_cursor )); then
     # See https://github.com/romkatv/powerlevel10k/issues/1699
-    if [[ $terminfo[cnorm] == *$'\e[?25h'(|'\e'*) ]]; then
+    if [[ $terminfo[cnorm] == *$'\e[?25h'(|$'\e'*) ]]; then
       typeset -g _p9k__cnorm=$'\e[?25h'
     else
       typeset -g _p9k__cnorm=$terminfo[cnorm]
@@ -7567,7 +7569,6 @@ _p9k_init_vars() {
   typeset -gA _p9k_display_k
   typeset -ga _p9k__display_v
 
-  typeset -gA _p9k__dotnet_stat_cache
   typeset -gA _p9k__dir_stat_cache
   typeset -gi _p9k__expanded
   typeset -gi _p9k__force_must_init
