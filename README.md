@@ -29,16 +29,55 @@ is a drop-in replacement for upstream Powerlevel10k: the configuration format, t
 `~/.p10k.zsh` are unchanged. Install it with any of the git-based
 [installation methods](#installation) below.
 
-Changes relative to upstream:
+Changes relative to upstream (bug fixes only; no new features). The complete list with the
+reasoning behind each fix is in the commit history and in [review-findings.md](review-findings.md).
 
-- `aws`: do not attribute the region of unrelated sections in `~/.aws/config` to a profile.
-- `dotnet_version`: fix the name of the segment init function.
-- `node_version`: depend on the `.node-version` file that was actually found.
-- `nvm`: do not use `path` as a loop variable in `_p9k_nvm_ls_default`.
-- `package`: accept negative numbers and exponents in `package.json`.
-- `vcs`: fix clamping of `POWERLEVEL9K_VCS_MAX_SYNC_LATENCY_SECONDS`.
-- Fix missing `$` in `[[ _p9k__ret == *%* ]]` checks.
-- Remove duplicate `_p9k_phpenv_global_version`; fix `_p9__ip_timestamp` typo.
+- **Security.** The gitstatusd installer verifies TLS certificates, requires a matching SHA-256
+  digest, and reuses a cached binary only when neither it nor its directory is writable by others.
+  Temporary files get unpredictable names and are created exclusively without following symlinks.
+  The state cache and the instant prompt file are sourced only when they, their directory and any
+  `.zwc` next to them belong to the user. Text that comes from repositories, environment variables
+  or command output is escaped before it reaches the prompt (version files, branch and tag names,
+  `.terraform/environment`, `package.json`, cloud and Kubernetes contexts, and more).
+  `gitstatus_query` rejects directory names containing the bytes gitstatusd uses as record and
+  field separators, which could otherwise inject requests whose replies were evaluated as shell
+  code. `laravel_version`, `rust_version`, `dotnet_version` and `go_version` no longer run code
+  selected by an untrusted checkout, and reads of files named by a repository stop at FIFOs and
+  devices.
+- **Instant prompt and caches.** `POWERLEVEL9K_INSTANT_PROMPT=off` is honored when the cached state
+  is restored. The dump no longer forks or redraws the raw prompt template, terminfo padding is
+  stripped, cache signatures include the inputs they depend on (terminal program version, OS type,
+  `CODEPOINT_OF_*`, `P9K_SSH`), temporary files are cleaned up on every exit path, and caches
+  built by older code are regenerated.
+- **Prompt rendering.** Fixes for the transient prompt with `)` in `PROMPT_CHAR_*_CONTENT_EXPANSION`,
+  for `SH_GLOB`, `KSH_ARRAYS`, `GLOB_SUBST`, `IGNORE_BRACES` and `IGNORE_CLOSE_BRACES`, for the
+  `truncate_absolute`, `truncate_to_unique` and `truncate_with_package_name` directory strategies,
+  for prompts with four or more lines, for gap and ruler characters that are special in prompt
+  expansion, for the vcs line index with empty prompt lines, and for `SHOW_ON_COMMAND` with segment
+  names that end in a digit, underscore or capital letter or contain a hyphen, as well as during
+  menu completion. The command parser behind `SHOW_ON_COMMAND` understands here-documents,
+  `doas`, `env`, `sudo -D`/`-R`, `repeat`, `case` patterns with a leading parenthesis, commands
+  given as `$VAR` and command substitutions inside assignments.
+- **Segments.** battery (sysfs file selection, discharge sign), ip/vpn_ip (per-address rows,
+  `@peer` suffixes, counter resets, ifconfig fallback), disk_usage, detect_virt, taskwarrior,
+  timewarrior, terraform and terraform_version, asdf (`ASDF_DEFAULT_TOOL_VERSIONS_FILENAME`),
+  haskell_stack (asynchronous), wifi (macOS 14.4+ and Linux signal bars), cpu_arch, kubecontext
+  (GKE regions), gcloud (`CLOUDSDK_ACTIVE_CONFIG_NAME`), aws and aws_eb_env (asynchronous), status
+  (exit codes above 255), command_execution_time rounding, nvm, nodenv, pyenv and goenv (CRLF
+  version files), rbenv and the other `*env` segments, svn and hg through vcs_info, package,
+  `*_SHOW_ON_UPGLOB` caching, custom segments, the user segment's template, the BSD ram segment,
+  and the human-readable byte formatter under non-English locales.
+- **Async worker.** Setup failures are cleaned up, hung jobs time out instead of freezing their
+  segment, defunct children are reaped, and a relative `TMPDIR` works.
+- **Configuration wizard.** Font detection and installation, backups and `.zshrc` edits on
+  filesystems that cannot preserve permissions, terminal state restoration on every exit path,
+  and several template substitutions that silently did nothing.
+- **Config templates and documentation.** Parameter names that the code never read, 256-color
+  values in the 8-color template, examples that broke when uncommented, stale statements and
+  broken anchors in this README, and the disabled `nordvpn` segment is marked as such.
+- **gitstatus.** The bash plugin no longer kills the shell with SIGPIPE when gitstatusd dies and
+  gets the same separator check as the zsh plugin; the installer, build script and gitstatusd
+  sources received portability and correctness fixes (the shipped binaries are still built upstream).
 
 Distribution packages ([Homebrew](#homebrew), [Arch Linux](#arch-linux),
 [Alpine Linux](#alpine-linux)), [Prezto](#prezto) and [Fig](#fig) install upstream Powerlevel10k,
