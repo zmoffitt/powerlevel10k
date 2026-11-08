@@ -7714,7 +7714,6 @@ _p9k_init_params() {
   _p9k_declare -e POWERLEVEL9K_PUBLIC_IP_NONE ""
   _p9k_declare -s POWERLEVEL9K_PUBLIC_IP_HOST "https://v4.ident.me/"
   _p9k_declare -s POWERLEVEL9K_PUBLIC_IP_VPN_INTERFACE ""
-  _p9k_segment_in_use public_ip || _POWERLEVEL9K_PUBLIC_IP_VPN_INTERFACE=
   _p9k_declare -b POWERLEVEL9K_ALWAYS_SHOW_CONTEXT 0
   _p9k_declare -b POWERLEVEL9K_ALWAYS_SHOW_USER 0
   _p9k_declare -e POWERLEVEL9K_CONTEXT_TEMPLATE "%n@%m"
@@ -7813,10 +7812,8 @@ _p9k_init_params() {
   _p9k_declare -i POWERLEVEL9K_SHORTEN_DIR_LENGTH
   _p9k_declare -s POWERLEVEL9K_IP_INTERFACE ""
   : ${_POWERLEVEL9K_IP_INTERFACE:='.*'}
-  _p9k_segment_in_use ip || _POWERLEVEL9K_IP_INTERFACE=
   _p9k_declare -s POWERLEVEL9K_VPN_IP_INTERFACE "(gpd|wg|(.*tun)|tailscale)[0-9]*|(zt.*)"
   : ${_POWERLEVEL9K_VPN_IP_INTERFACE:='.*'}
-  _p9k_segment_in_use vpn_ip || _POWERLEVEL9K_VPN_IP_INTERFACE=
   _p9k_declare -b POWERLEVEL9K_VPN_IP_SHOW_ALL 0
   _p9k_declare -i POWERLEVEL9K_LOAD_WHICH 5
   case $_POWERLEVEL9K_LOAD_WHICH in
@@ -8021,6 +8018,11 @@ _p9k_init_params() {
     fi
   done
 
+  # These must run after *_DISABLED segments have been removed.
+  _p9k_segment_in_use public_ip || _POWERLEVEL9K_PUBLIC_IP_VPN_INTERFACE=
+  _p9k_segment_in_use ip        || _POWERLEVEL9K_IP_INTERFACE=
+  _p9k_segment_in_use vpn_ip    || _POWERLEVEL9K_VPN_IP_INTERFACE=
+
   local var
   for var in ${(@)${parameters[(I)POWERLEVEL9K_*]}/(#m)*/${(M)${parameters[_$MATCH]-$MATCH}:#$MATCH}}; do
     case $parameters[$var] in
@@ -8120,8 +8122,10 @@ function _p9k_redraw() {
 
 function _p9k_deschedule_redraw() {
   (( _p9k__redraw_fd )) || return
-  zle -F $_p9k__redraw_fd
-  exec {_p9k__redraw_fd}>&-
+  # Another plugin may have already removed our handler and closed (or reused) the fd.
+  if zle -F $_p9k__redraw_fd 2>/dev/null; then
+    { exec {_p9k__redraw_fd}>&- } 2>/dev/null
+  fi
   _p9k__redraw_fd=0
 }
 
@@ -8151,14 +8155,20 @@ function _p9k_widget_hook() {
   fi
   __p9k_reset_state=1
   _p9k_check_visual_mode
-  local pat idx var
-  for pat idx var in $_p9k_show_on_command; do
-    if (( $P9K_COMMANDS[(I)$pat] )); then
-      _p9k_display_segment $idx $var show
-    else
-      _p9k_display_segment $idx $var hide
-    fi
-  done
+  local pat idx var w=$1
+  [[ $w == (|zle-line-pre-redraw) ]] && w=${LASTWIDGET-}
+  # reset-prompt while the completion menu is shown wipes the menu (zsh-workers 2019/msg00161),
+  # so defer SHOW_ON_COMMAND updates until the next non-completion widget. KEYMAP is not
+  # menuselect in zle-line-pre-redraw, hence LASTWIDGET.
+  if [[ ${w#.} != (menu-select|menu-complete|reverse-menu-complete|menu-expand-or-complete|expand-or-complete|expand-or-complete-prefix|complete-word|_complete_*|fzf-tab-complete) ]]; then
+    for pat idx var in $_p9k_show_on_command; do
+      if (( $P9K_COMMANDS[(I)$pat] )); then
+        _p9k_display_segment $idx $var show
+      else
+        _p9k_display_segment $idx $var hide
+      fi
+    done
+  fi
   (( $+functions[p10k-on-post-widget] )) && p10k-on-post-widget "${@:2}"
   (( $+functions[_p9k_on_widget_$1] )) && _p9k_on_widget_$1
   (( __p9k_reset_state == 2 )) && _p9k_reset_prompt
@@ -8326,6 +8336,22 @@ function _p9k_restore_prompt() {
 prompt__p9k_internal_nothing() { _p9k__prompt+='${_p9k__sss::=}'; }
 instant_prompt__p9k_internal_nothing() { prompt__p9k_internal_nothing; }
 
+# Sets _p9k__ret to the padding character $1 written so that it can be pasted into
+# ${(pl...)} within a prompt string. Characters that would break parsing of the
+# expansion are written as \xNN escapes, which the (p) flag decodes.
+_p9k_pad_char() {
+  case $1 in
+    '{')  _p9k__ret='\x7b';;
+    '}')  _p9k__ret='\x7d';;
+    '"')  _p9k__ret='\x22';;
+    "'")  _p9k__ret='\x27';;
+    '`')  _p9k__ret='\x60';;
+    '$')  _p9k__ret='\x24';;
+    '\')  _p9k__ret='\x5c';;
+    *)    _p9k__ret=$1;;
+  esac
+}
+
 # _p9k_build_gap_post line_number
 _p9k_build_gap_post() {
   if [[ $1 == 1 ]]; then
@@ -8335,7 +8361,8 @@ _p9k_build_gap_post() {
   fi
   _p9k_get_icon '' MULTILINE_${kind_u}_PROMPT_GAP_CHAR
   local char=${_p9k__ret:- }
-  _p9k_prompt_length $char
+  # '%' cannot be used: prompt expansion would halve the padding.
+  [[ $char == '%' ]] && _p9k__ret=0 || _p9k_prompt_length $char
   if (( _p9k__ret != 1 || $#char != 1 )); then
     >&2 print -rP -- "%F{red}WARNING!%f %BMULTILINE_${kind_u}_PROMPT_GAP_CHAR%b is not one character long. Will use ' '."
     >&2 print -rP -- "Either change the value of %BPOWERLEVEL9K_MULTILINE_${kind_u}_PROMPT_GAP_CHAR%b or remove it."
@@ -8353,6 +8380,8 @@ _p9k_build_gap_post() {
   local exp=_POWERLEVEL9K_MULTILINE_${kind_u}_PROMPT_GAP_EXPANSION
   (( $+parameters[$exp] )) && exp=${(P)exp} || exp='${P9K_GAP}'
   [[ $char == '.' ]] && local s=',' || local s='.'
+  _p9k_pad_char $char
+  char=$_p9k__ret
   _p9k__ret=$'${${_p9k__g+\n}:-'$style'${${${_p9k__m:#-*}:+'
   _p9k__ret+='${${_p9k__'$1'g+${(pl.$((_p9k__m+1)).. .)}}:-'
   if [[ $exp == '${P9K_GAP}' ]]; then
@@ -8494,7 +8523,7 @@ _p9k_init_lines() {
         for i in {2..$((num_lines-1))}; do
           _p9k_line_suffix_right[i]+='${_p9k__'$i'r_frame-'${(qqq)_p9k__ret}'}'
         done
-        _p9k_line_never_empty_right[2,-2]=${(@)_p9k_line_never_empty_right[2,-2]/0/1}
+        _p9k_line_never_empty_right[2,-2]=(${(@)_p9k_line_never_empty_right[2,-2]/0/1})
       fi
     fi
   fi
@@ -8627,7 +8656,7 @@ _p9k_init_prompt() {
 
   _p9k_get_icon '' RULER_CHAR
   local ruler_char=$_p9k__ret
-  _p9k_prompt_length $ruler_char
+  [[ $ruler_char == '%' ]] && _p9k__ret=0 || _p9k_prompt_length $ruler_char
   (( _p9k__ret == 1 && $#ruler_char == 1 )) || ruler_char=' '
   _p9k_color prompt_ruler BACKGROUND ""
   if [[ -z $_p9k__ret && $ruler_char == ' ' ]]; then
@@ -8639,6 +8668,8 @@ _p9k_init_prompt() {
     _p9k_foreground $_p9k__ret
     ruler+=$_p9k__ret
     [[ $ruler_char == '.' ]] && local sep=',' || local sep='.'
+    _p9k_pad_char $ruler_char
+    ruler_char=$_p9k__ret
     ruler+='${(pl'$sep'${$((_p9k__clm-_p9k__ind))/#-*/0}'$sep$sep$ruler_char$sep')}%k%f'
     if (( __p9k_ksh_arrays )); then
       ruler+='${_p9k_t[$((!_p9k__ind))]}'
@@ -8654,8 +8685,11 @@ _p9k_init_prompt() {
     _p9k_prompt_prefix_left+='${(e)_p9k_t[${_p9k__ruler_i:-'$#_p9k_t'}]}'
   fi
 
-  ( _p9k_segment_in_use time && (( _POWERLEVEL9K_TIME_UPDATE_ON_COMMAND )) )
-  _p9k_reset_on_line_finish=$((!$?))
+  if _p9k_segment_in_use time && (( _POWERLEVEL9K_TIME_UPDATE_ON_COMMAND )); then
+    _p9k_reset_on_line_finish=1
+  else
+    _p9k_reset_on_line_finish=0
+  fi
 
   _p9k_t+=$_p9k_gap_pre
   _p9k_gap_pre='${(e)_p9k_t['$(($#_p9k_t - __p9k_ksh_arrays))']}'
@@ -8725,6 +8759,9 @@ _p9k_must_init() {
   _p9k__param_pat+=$'$__p9k_sh_glob\1$__p9k_ksh_arrays\1$ITERM_SHELL_INTEGRATION_INSTALLED\1'
   _p9k__param_pat+=$'${PROMPT_EOL_MARK-%B%S%#%s%b}\1$+commands[locale]\1$langinfo[CODESET]\1'
   _p9k__param_pat+=$'${(M)VTE_VERSION:#(<1-4602>|4801)}\1$DEFAULT_USER\1$P9K_SSH\1$+commands[uname]\1'
+  _p9k__param_pat+=$'${${(M)TERM_PROGRAM_VERSION:#(3.<7->*|<4->.*)}:+k}\1'
+  # The dump holds _p9k_os and _p9k_uname*; hosts with a shared home may run different zsh builds.
+  _p9k__param_pat+=$'$OSTYPE\1$MACHTYPE\1'
   _p9k__param_pat+=$'$__p9k_root_dir\1$functions[p10k-on-init]\1$functions[p10k-on-pre-prompt]\1'
   _p9k__param_pat+=$'$functions[p10k-on-post-widget]\1$functions[p10k-on-post-prompt]\1'
   _p9k__param_pat+=$'$+commands[git]\1$terminfo[colors]\1${+_z4h_iterm_cmd}\1'
@@ -8765,22 +8802,22 @@ function _p9k_init_cacheable() {
   local -i i=0
 
   for i in {1..$#_p9k_line_segments_left}; do
-    for elem in ${${${(@0)_p9k_line_segments_left[i]}%_joined}//-/_}; do
-      local var=POWERLEVEL9K_${${(U)elem}//İ/I}_SHOW_ON_COMMAND
-      (( $+parameters[$var] )) || continue
+    # _p9k_display_k is keyed by the original segment name; only parameter names use '_' for '-'.
+    for elem in ${${(@0)_p9k_line_segments_left[i]}%_joined}; do
+      local var=POWERLEVEL9K_${${(U)${elem//-/_}}//İ/I}_SHOW_ON_COMMAND
+      (( $+parameters[$var] && $+_p9k_display_k[$i/left/$elem] )) || continue
       _p9k_show_on_command+=(
         $'(|*[/\0])('${(j.|.)${(P)var}}')'
         $((1+_p9k_display_k[$i/left/$elem]))
-        _p9k__${i}l$elem)
+        _p9k__${i}l${elem//-/_})
     done
-    for elem in ${${${(@0)_p9k_line_segments_right[i]}%_joined}//-/_}; do
-      local var=POWERLEVEL9K_${${(U)elem}//İ/I}_SHOW_ON_COMMAND
-      (( $+parameters[$var] )) || continue
-      local cmds=(${(P)var})
+    for elem in ${${(@0)_p9k_line_segments_right[i]}%_joined}; do
+      local var=POWERLEVEL9K_${${(U)${elem//-/_}}//İ/I}_SHOW_ON_COMMAND
+      (( $+parameters[$var] && $+_p9k_display_k[$i/right/$elem] )) || continue
       _p9k_show_on_command+=(
         $'(|*[/\0])('${(j.|.)${(P)var}}')'
-        $((1+$_p9k_display_k[$i/right/$elem]))
-        _p9k__${i}r$elem)
+        $((1+_p9k_display_k[$i/right/$elem]))
+        _p9k__${i}r${elem//-/_})
     done
   done
 
@@ -8954,6 +8991,8 @@ function _p9k_init_cacheable() {
     local -i i=2
     if (( !_POWERLEVEL9K_STATUS_HIDE_SIGNAME )); then
       for ((; i <= $#signals; ++i)); do
+        # ZERR and DEBUG are trap pseudo-signals; no process can die from them.
+        [[ $signals[i] == (ZERR|DEBUG|ERR) ]] && continue
         local sig=$signals[i]
         (( _POWERLEVEL9K_STATUS_VERBOSE_SIGNAME )) && sig="SIG${sig}($((i-1)))"
         _p9k_exitcode2str[$((128+i))]=$sig
