@@ -6609,7 +6609,7 @@ _p9k_set_instant_prompt() {
   [[ -n $RPROMPT ]] || unset RPROMPT
 }
 
-typeset -gri __p9k_instant_prompt_version=49
+typeset -gri __p9k_instant_prompt_version=50
 
 # Creates a new file next to $1 with an unpredictable name without following symlinks (the cache
 # directory may be writable by others) and opens it for writing. Stores the file descriptor in the
@@ -6748,7 +6748,7 @@ _p9k_dump_instant_prompt() {
       (( ARGC )) || set -- "*"
       for opt; do
         for k in ${(u@)_p9k_display_k[(I)$opt]:/(#m)*/$_p9k_display_k[$MATCH]}; do
-          reply+=($_p9k__display_v[k,k+1])
+          reply+=("${(@)_p9k__display_v[k,k+1]}")
         done
       done
       return 0
@@ -6756,6 +6756,7 @@ _p9k_dump_instant_prompt() {
     for opt in "${@:$OPTIND}"; do
       pair=(${(s:=:)opt})
       list=(${(s:,:)${pair[2]}})
+      (( $#list )) || return 1
       if [[ ${(b)pair[1]} == $pair[1] ]]; then
         local ks=($_p9k_display_k[$pair[1]])
       else
@@ -9079,6 +9080,8 @@ _p9k_must_init() {
   _p9k__param_pat+=$'${${(M)TERM_PROGRAM_VERSION:#(3.<7->*|<4->.*)}:+k}\1'
   # The dump holds _p9k_os and _p9k_uname*; hosts with a shared home may run different zsh builds.
   _p9k__param_pat+=$'$OSTYPE\1$MACHTYPE\1'
+  # In awesome-mapped-fontconfig mode the icons are built from CODEPOINT_OF_* and saved in the dump.
+  _p9k__param_pat+=$'$AWESOME_GLYPHS_LOADED\1${#parameters[(I)CODEPOINT_OF_*]}\1'
   _p9k__param_pat+=$'$__p9k_root_dir\1$functions[p10k-on-init]\1$functions[p10k-on-pre-prompt]\1'
   _p9k__param_pat+=$'$functions[p10k-on-post-widget]\1$functions[p10k-on-post-prompt]\1'
   _p9k__param_pat+=$'$+commands[git]\1$terminfo[colors]\1${+_z4h_iterm_cmd}\1'
@@ -10104,7 +10107,7 @@ if [[ $__p9k_dump_file != $__p9k_instant_prompt_dump_file && -n $__p9k_instant_p
   zf_rm -f -- $__p9k_instant_prompt_dump_file{,.zwc} 2>/dev/null
 fi
 
-typeset -g P9K_VERSION=1.20.19-zm.2
+typeset -g P9K_VERSION=1.20.19-zm.3
 
 if [[ ${VSCODE_SHELL_INTEGRATION-} == <1-> && ${+__p9k_force_term_shell_integration} == 0 ]]; then
   typeset -gri __p9k_force_term_shell_integration=1
