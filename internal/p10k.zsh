@@ -937,7 +937,16 @@ _p9k_right_prompt_segment() {
     local t=$(($#_p9k_t - __p9k_ksh_arrays))
     _p9k_t+=$start_sep$style$left_space           # 1
     _p9k_t+=$w$style                              # 2
-    _p9k_t+=$w$style$subsep$left_space            # 3
+    if [[ -n $fg_color && $fg_color == $bg_color ]]; then
+      if [[ $fg_color == $_p9k_color1 ]]; then
+        _p9k_foreground $_p9k_color2
+      else
+        _p9k_foreground $_p9k_color1
+      fi
+      _p9k_t+=$w%b$bg$_p9k__ret$subsep$style$left_space  # 3
+    else
+      _p9k_t+=$w$style$subsep$left_space          # 3
+    fi
     _p9k_t+=$w%F{$bg_color}$sep$style$left_space  # 4
 
     local join="_p9k__i>=$_p9k_right_join[$_p9k__segment_index]"
@@ -1070,16 +1079,7 @@ _p9k_right_prompt_segment() {
 
     p+='${${:-'
 
-    if [[ -n $fg_color && $fg_color == $bg_color ]]; then
-      if [[ $fg_color == $_p9k_color1 ]]; then
-        _p9k_foreground $_p9k_color2
-      else
-        _p9k_foreground $_p9k_color1
-      fi
-    else
-      _p9k__ret=$fg
-    fi
-    _p9k__ret=${_p9k__ret//\}/\\\}}
+    _p9k__ret=${fg//\}/\\\}}
     p+="\${_p9k__w::=${right_space_:+$style_}$right_space_%b$bg_$_p9k__ret}"
 
     p+='${_p9k__sss::='
@@ -1233,21 +1233,65 @@ _p9k_prompt_aws_init() {
 ################################################################
 # Current Elastic Beanstalk environment
 prompt_aws_eb_env() {
-  _p9k_upglob .elasticbeanstalk -/ && return
-  local dir=$_p9k__parent_dirs[$?]
-
-  if ! _p9k_cache_stat_get $0 $dir/.elasticbeanstalk/config.yml; then
-    local env
-    env="$(command eb list 2>/dev/null)" || env=
-    env="${${(@M)${(@f)env}:#\* *}#\* }"
-    _p9k_cache_stat_set "$env"
-  fi
-  [[ -n $_p9k__cache_val[1] ]] || return
-  _p9k_prompt_segment "$0" black green 'AWS_EB_ICON' 0 '' "${_p9k__cache_val[1]//\%/%%}"
+  [[ -n $_p9k__aws_eb_env ]] || return
+  _p9k_prompt_segment "$0" black green 'AWS_EB_ICON' 0 '' "${(V)_p9k__aws_eb_env//\%/%%}"
 }
 
 _p9k_prompt_aws_eb_env_init() {
+  _p9k__async_segments_compute+='_p9k_aws_eb_env_prefetch'
   typeset -g "_p9k__segment_cond_${_p9k__prompt_side}[_p9k__segment_index]"='$commands[eb]'
+}
+
+# `eb list` talks to AWS and can block or prompt for credentials, so it runs in the worker.
+_p9k_aws_eb_env_prefetch() {
+  typeset -g _p9k__aws_eb_env=
+  (( $+commands[eb] )) || return
+  _p9k_upglob .elasticbeanstalk -/ && return
+  local dir=$_p9k__parent_dirs[$?]
+  # The output depends on the git branch and the AWS profile/region. Credentials are not
+  # part of the key because the cache is persisted.
+  local key="aws_eb_env:$AWS_EB_PROFILE:$AWS_PROFILE:$AWS_DEFAULT_PROFILE:$AWS_REGION:$AWS_DEFAULT_REGION"
+  if _p9k_cache_stat_get $key $dir/.elasticbeanstalk/config.yml $dir/.git/HEAD; then
+    _p9k__aws_eb_env=$_p9k__cache_val[1]
+    return
+  fi
+  # The worker's environment is a snapshot from when it started; pass the current AWS_* vars.
+  local k
+  local -a kvs
+  for k in ${(M)${(k)parameters[(R)*export*]}:#AWS_*}; do
+    kvs+=("$k=${(P)k}")
+  done
+  _p9k_worker_invoke aws_eb_env \
+    "_p9k_prompt_aws_eb_env_compute ${(q)key} ${(q)dir} ${(q)commands[eb]} ${(@q)kvs}"
+}
+
+_p9k_prompt_aws_eb_env_compute() {
+  _p9k_worker_async "_p9k_prompt_aws_eb_env_async ${(@q)@}" _p9k_prompt_aws_eb_env_sync
+}
+
+_p9k_prompt_aws_eb_env_async() {
+  local key=$1 dir=$2 eb=$3 env kv
+  shift 3
+  unset -m 'AWS_*'
+  for kv; do export -- $kv; done
+  if builtin cd -q -- $dir 2>/dev/null; then
+    env="$($eb list </dev/null 2>/dev/null)" || env=
+  fi
+  env="${${(@M)${(@f)env}:#\* *}#\* }"
+  print -r -- "_p9k_prompt_aws_eb_env_update ${(q)key} ${(q)dir} ${(q)env}"
+}
+
+_p9k_prompt_aws_eb_env_sync() {
+  _p9k_worker_reply ${REPLY%$'\n'}
+}
+
+_p9k_prompt_aws_eb_env_update() {
+  if ! _p9k_cache_stat_get $1 $2/.elasticbeanstalk/config.yml $2/.git/HEAD; then
+    _p9k_cache_stat_set "$3"
+  fi
+  local old=$_p9k__aws_eb_env
+  _p9k_aws_eb_env_prefetch
+  [[ $_p9k__aws_eb_env == $old ]] || reset=2
 }
 
 ################################################################
@@ -1292,7 +1336,10 @@ _p9k_prompt_disk_usage_compute() {
 }
 
 _p9k_prompt_disk_usage_async() {
-  local pct=${${=${(f)"$(df -P $1 2>/dev/null)"}[2]}[5]%%%}
+  # The filesystem name may contain spaces, so look for the capacity column instead of
+  # taking a fixed word.
+  local -a w=(${=${(f)"$(df -P -- $1 2>/dev/null)"}[2]})
+  local pct=${${(M)w[2,-1]:#<0-100>%}[1]%\%}
   [[ $pct == <0-100> && $pct != $_p9k__disk_usage_pct ]] || return
   _p9k__disk_usage_pct=$pct
   _p9k__disk_usage_normal=
@@ -1435,6 +1482,7 @@ _p9k_prompt_battery_set_args() {
         # Skip batteries with "Unknown" status: https://github.com/romkatv/powerlevel10k/pull/2562.
         [[ $bat_status == Unknown ]] && continue
         local -i pow=0 full=0
+        local unit=
         # A glob expands in sorted order, which would pick charge_counter over charge_full
         # and current_now over power_now. Try the candidates in order of preference and keep
         # the units of the rate consistent with those of the capacity.
@@ -1443,16 +1491,21 @@ _p9k_prompt_battery_set_args() {
         for f in energy_full charge_full charge_counter; do
           _p9k_read_file $dir/$f(N) || continue
           (( energy_full += ${full::=_p9k__ret} ))
+          unit=${f%%_*}
           [[ $f == energy_full ]] || rates=(current_now power_now)
           break
         done
         for f in $rates; do
-          _p9k_read_file $dir/$f(N) && (( $#_p9k__ret < 9 )) || continue
+          # Some drivers report the discharge rate as a negative number.
+          _p9k_read_file $dir/$f(N) && _p9k__ret=${_p9k__ret#-} && (( $#_p9k__ret < 9 )) || continue
           (( power_now += ${pow::=$_p9k__ret} ))
           break
         done
         if _p9k_read_file $dir/capacity(N); then
           (( energy_now += _p9k__ret * full / 100. + 0.5 ))
+        elif [[ -n $unit ]]; then
+          # Use the same units as the capacity.
+          _p9k_read_file $dir/${unit}_now(N) && (( energy_now += _p9k__ret ))
         elif _p9k_read_file $dir/(energy|charge)_now(N); then
           (( energy_now += _p9k__ret ))
         fi
@@ -1668,7 +1721,7 @@ prompt_user() {
   if [[ -n "$SUDO_COMMAND" ]]; then
     _p9k_prompt_segment "${0}_SUDO" "${_p9k_color1}" yellow SUDO_ICON 0 '${${(%):-%#}:#\#}' "$_POWERLEVEL9K_USER_TEMPLATE"
   else
-    _p9k_prompt_segment "${0}_DEFAULT" "${_p9k_color1}" yellow USER_ICON 0 '${${(%):-%#}:#\#}' "%n"
+    _p9k_prompt_segment "${0}_DEFAULT" "${_p9k_color1}" yellow USER_ICON 0 '${${(%):-%#}:#\#}' "$_POWERLEVEL9K_USER_TEMPLATE"
   fi
   (( _p9k__has_upglob )) || typeset -g "_p9k__segment_val_${_p9k__prompt_side}[_p9k__segment_index]"=$_p9k__prompt[len+1,-1]
 }
@@ -1718,12 +1771,14 @@ function instant_prompt_toolbox() {
 # The 'custom` prompt provides a way for users to invoke commands and display
 # the output in a segment.
 _p9k_custom_prompt() {
-  local segment_name=${1:u}
+  local segment_name=${${(U)1}//İ/I}
   local command=_POWERLEVEL9K_CUSTOM_${segment_name}
   command=${(P)command}
   local parts=("${(@z)command}")
   local cmd="${(Q)parts[1]}"
-  (( $+functions[$cmd] || $+commands[$cmd] )) || return
+  # Aliases are not listed: the command is evaluated with no_aliases.
+  (( $+functions[$cmd] || $+commands[$cmd] || $+builtins[$cmd] || $+reswords[(r)${(b)cmd}] )) ||
+    [[ $cmd == *=* ]] || [[ $cmd == */* && -x ${~cmd} ]] || return
   local content="$(eval $command)"
   [[ -n $content ]] || return
   _p9k_prompt_segment "prompt_custom_$1" $_p9k_color2 $_p9k_color1 "CUSTOM_${segment_name}_ICON" 0 '' "$content"
@@ -1735,12 +1790,13 @@ prompt_command_execution_time() {
   (( $+P9K_COMMAND_DURATION_SECONDS )) || return
   (( P9K_COMMAND_DURATION_SECONDS >= _POWERLEVEL9K_COMMAND_EXECUTION_TIME_THRESHOLD )) || return
 
-  if (( P9K_COMMAND_DURATION_SECONDS < 60 )); then
-    if (( !_POWERLEVEL9K_COMMAND_EXECUTION_TIME_PRECISION )); then
-      local -i sec=$((P9K_COMMAND_DURATION_SECONDS + 0.5))
-    else
-      local -F $_POWERLEVEL9K_COMMAND_EXECUTION_TIME_PRECISION sec=P9K_COMMAND_DURATION_SECONDS
-    fi
+  if (( !_POWERLEVEL9K_COMMAND_EXECUTION_TIME_PRECISION )); then
+    local -i sec=$((P9K_COMMAND_DURATION_SECONDS + 0.5))
+  else
+    local -F $_POWERLEVEL9K_COMMAND_EXECUTION_TIME_PRECISION sec=P9K_COMMAND_DURATION_SECONDS
+  fi
+  # Compare the rounded value so that 59.7s isn't shown as 60s.
+  if (( $sec < 60 )); then
     local text=${sec}s
   else
     local -i d=$((P9K_COMMAND_DURATION_SECONDS + 0.5))
