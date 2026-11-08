@@ -6196,13 +6196,16 @@ function _p9k_prompt_net_iface_async() {
   if (( $+commands[ip] )) && [[ $+commands[ifconfig] == 0 || $OSTYPE == linux* ]]; then
     for line in ${(f)"$(command ip -4 a show 2>/dev/null)"}; do
       if [[ $line == (#b)<->:[[:space:]]##([^:]##):[[:space:]]##\<([^\>]#)\>* ]]; then
-        [[ ,$match[2], == *,UP,* ]] && iface=$match[1] || iface=
+        # iproute2 prints veth/macvlan/VLAN links as `name@peer`; the device name is `name`.
+        [[ ,$match[2], == *,UP,* ]] && iface=${match[1]%%@*} || iface=
       elif [[ -n $iface && $line == (#b)[[:space:]]##inet[[:space:]]##([0-9.]##)* ]]; then
         iface2ip+=($iface $match[1])
         iface=
       fi
     done
-  elif (( $+commands[ifconfig] )); then
+  fi
+  # `ip` can print nothing where netlink is denied (e.g., Android/Termux); fall back to ifconfig.
+  if (( ! $#iface2ip && $+commands[ifconfig] )); then
     for line in ${(f)"$(command ifconfig 2>/dev/null)"}; do
       if [[ $line == (#b)([^[:space:]]##):[[:space:]]##flags=([[:xdigit:]]##)'<'* ]]; then
         [[ $match[2] == *[13579bdfBDF] ]] && iface=$match[1] || iface=
@@ -6260,9 +6263,13 @@ function _p9k_prompt_net_iface_async() {
           ip_tx_rate=${P9K_IP_TX_RATE:-0 B/s}
           ip_rx_rate=${P9K_IP_RX_RATE:-0 B/s}
         else
-          _p9k_human_readable_bytes $(((ip_tx_bytes - P9K_IP_TX_BYTES) / t))
+          # Counters can go backwards after an interface reset or a 32-bit wrap.
+          local -i dtx='ip_tx_bytes - P9K_IP_TX_BYTES' drx='ip_rx_bytes - P9K_IP_RX_BYTES'
+          (( dtx < 0 )) && dtx=0
+          (( drx < 0 )) && drx=0
+          _p9k_human_readable_bytes $((dtx / t))
           [[ $_p9k__ret == *B ]] && ip_tx_rate="$_p9k__ret[1,-2] B/s" || ip_tx_rate="$_p9k__ret[1,-2] $_p9k__ret[-1]iB/s"
-          _p9k_human_readable_bytes $(((ip_rx_bytes - P9K_IP_RX_BYTES) / t))
+          _p9k_human_readable_bytes $((drx / t))
           [[ $_p9k__ret == *B ]] && ip_rx_rate="$_p9k__ret[1,-2] B/s" || ip_rx_rate="$_p9k__ret[1,-2] $_p9k__ret[-1]iB/s"
         fi
       else
@@ -6450,7 +6457,8 @@ function _p9k_set_prompt() {
         if (( _p9k__line_index == num_lines && (_POWERLEVEL9K_DIR_MIN_COMMAND_COLUMNS > 0 || _POWERLEVEL9K_DIR_MIN_COMMAND_COLUMNS_PCT > 0) )); then
           local a=$_POWERLEVEL9K_DIR_MIN_COMMAND_COLUMNS
           local f=$((0.01*_POWERLEVEL9K_DIR_MIN_COMMAND_COLUMNS_PCT))'*_p9k__clm'
-          _p9k__prompt+="\${\${_p9k__h::=$((($a<$f)*$f+($a>=$f)*$a))}+}"
+          # Leave $f unevaluated: _p9k__clm is set from COLUMNS at expansion time.
+          _p9k__prompt+='${${_p9k__h::=$(('$f'>'$a'?'$f':'$a'))}+}'
         else
           _p9k__prompt+='${${_p9k__h::=0}+}'
         fi
@@ -6503,6 +6511,18 @@ _p9k_set_instant_prompt() {
 
 typeset -gri __p9k_instant_prompt_version=49
 
+# Creates a new file next to $1 with an unpredictable name without following symlinks (the cache
+# directory may be writable by others) and opens it for writing. Stores the file descriptor in the
+# parameter named $2 and the file name in _p9k__ret.
+function _p9k_open_tmp() {
+  local -i attempt
+  for ((attempt = 0; attempt < 100; ++attempt)); do
+    _p9k__ret=$1.tmp.$$.$RANDOM$RANDOM
+    sysopen -w -m 600 -o creat,excl,nofollow -u $2 -- $_p9k__ret 2>/dev/null && return
+  done
+  return 1
+}
+
 _p9k_dump_instant_prompt() {
   local user=${(%):-%n}
   local root_dir=${__p9k_dump_file:h}
@@ -6511,12 +6531,12 @@ _p9k_dump_instant_prompt() {
   local prompt_file=$prompt_dir/prompt-${#_p9k__cwd}
   [[ $root_dir == /* ]] || return
   [[ -d $prompt_dir ]] || zf_mkdir -p -- $prompt_dir || return
-  [[ -w $root_dir && -w $prompt_dir && -O $prompt_dir ]] || return
+  [[ -w $root_dir && -w $prompt_dir && ! -L $prompt_dir && -O $prompt_dir ]] || return
 
   if [[ ! -e $root_file  ]]; then
-    local tmp=$root_file.tmp.$$
     local -i fd
-    sysopen -a -m 600 -o creat,trunc -u fd -- $tmp || return
+    _p9k_open_tmp $root_file fd || return
+    local tmp=$_p9k__ret
     {
       [[ $TERM == (screen*|tmux*) ]] && local screen='-n' || local screen='-z'
       local -a display_v=("${_p9k__display_v[@]}")
@@ -6527,7 +6547,7 @@ _p9k_dump_instant_prompt() {
       local gitstatus_dir=${${_POWERLEVEL9K_GITSTATUS_DIR:A}:-${__p9k_root_dir}/gitstatus}
       local gitstatus_header
       if [[ -r $gitstatus_dir/install.info ]]; then
-        IFS= read -r gitstatus_header <$gitstatus_dir/install.info || return
+        IFS= read -r gitstatus_header <$gitstatus_dir/install.info || gitstatus_header=borked
       fi
       >&$fd print -r -- '[[ -t 0 && -t 1 && -t 2 && -o interactive && -o zle && -o no_xtrace ]] &&
   ! (( ${+__p9k_instant_prompt_disabled} || ZSH_SUBSHELL || ${+ZSH_SCRIPT} || ${+ZSH_EXECUTION_STRING} )) || return 0'
@@ -6564,7 +6584,7 @@ _p9k_dump_instant_prompt() {
     [[ -z $loc_cmd ]] && loc_cmd='${(q)commands[locale]}'
     if [[ -x $loc_cmd ]]; then
       local -a locs
-      if locs=(${(@M)$(locale -a 2>/dev/null):#*.(utf|UTF)(-|)8}) && (( $#locs )); then
+      if locs=(${(@M)$("$loc_cmd" -a 2>/dev/null):#*.(utf|UTF)(-|)8}) && (( $#locs )); then
         local loc=${locs[(r)(#i)C.UTF(-|)8]:-${locs[(r)(#i)en_US.UTF(-|)8]:-$locs[1]}}
         [[ -n $LC_ALL ]] && local LC_ALL=$loc || local LC_CTYPE=$loc
       fi
@@ -6817,12 +6837,16 @@ _p9k_dump_instant_prompt() {
     sysopen -w -m 600 -o creat,excl,nofollow -u fd_out -- $__p9k_instant_prompt_output 2>/dev/null && break
   done
   (( attempt < 100 )) || return
-  print -rn -- "${out}${esc}?2004h" || return
+  local -i fd_null
+  if ! sysopen -ru fd_null /dev/null || ! print -rn -- "${out}${esc}?2004h"; then
+    (( fd_null )) && exec {fd_null}>&-
+    exec {fd_out}>&-
+    zmodload -F zsh/files b:zf_rm && zf_rm -f -- $__p9k_instant_prompt_output 2>/dev/null
+    return 1
+  fi
   if (( $+commands[stty] )); then
     command stty -icanon 2>/dev/null
   fi
-  local fd_null
-  sysopen -ru fd_null /dev/null || return
   exec {__p9k_fd_0}<&0 {__p9k_fd_1}>&1 {__p9k_fd_2}>&2 0<&$fd_null 1>&$fd_out
   exec 2>&1 {fd_null}>&- {fd_out}>&-
   typeset -gi __p9k_instant_prompt_active=1
@@ -6831,7 +6855,8 @@ _p9k_dump_instant_prompt() {
     -z4h-save-screen
   fi
   typeset -g __p9k_instant_prompt_dump_file=${XDG_CACHE_HOME:-~/.cache}/p10k-dump-${(%):-%n}.zsh
-  if [[ $__p9k_instant_prompt_dump_file == /* && -O $__p9k_instant_prompt_dump_file ]] &&
+  if [[ $__p9k_instant_prompt_dump_file == /* && -O $__p9k_instant_prompt_dump_file &&
+        ( ! -e $__p9k_instant_prompt_dump_file.zwc || -O $__p9k_instant_prompt_dump_file.zwc ) ]] &&
      builtin source $__p9k_instant_prompt_dump_file 2>/dev/null && (( $+functions[_p9k_preinit] )); then
     _p9k_preinit
   fi
@@ -6887,7 +6912,11 @@ _p9k_dump_instant_prompt() {
       zf_rm -f -- $root_file.zwc          || return
       zf_mv -f -- $tmp $root_file         || return
       zcompile -R -- $tmp.zwc $root_file  || return
-      zf_chmod 600 $tmp.zwc               || return
+      if (( $+builtins[zf_chmod] )); then
+        zf_chmod 600 $tmp.zwc             || return
+      else
+        command chmod 600 -- $tmp.zwc     || return
+      fi
       zf_mv -f -- $tmp.zwc $root_file.zwc || return
     } always {
       (( $? )) && zf_rm -f -- $tmp $tmp.zwc 2>/dev/null
@@ -6968,9 +6997,9 @@ function _p9k_dump_state() {
   [[ $dir == /* ]] || return
   [[ -d $dir ]] || zf_mkdir -p -- $dir || return
   [[ -w $dir ]] || return
-  local tmp=$__p9k_dump_file.tmp.$$
   local -i fd
-  sysopen -a -m 600 -o creat,trunc -u fd -- $tmp || return
+  _p9k_open_tmp $__p9k_dump_file fd || return
+  local tmp=$_p9k__ret
   {
     {
       typeset -g __p9k_cached_param_pat=$_p9k__param_pat
@@ -6988,7 +7017,11 @@ function _p9k_dump_state() {
     zf_rm -f -- $__p9k_dump_file.zwc          || return
     zf_mv -f -- $tmp $__p9k_dump_file         || return
     zcompile -R -- $tmp.zwc $__p9k_dump_file  || return
-    zf_chmod 600 $tmp.zwc                     || return
+    if (( $+builtins[zf_chmod] )); then
+      zf_chmod 600 $tmp.zwc                   || return
+    else
+      command chmod 600 -- $tmp.zwc           || return
+    fi
     zf_mv -f -- $tmp.zwc $__p9k_dump_file.zwc || return
   } always {
     (( $? )) && zf_rm -f -- $tmp $tmp.zwc 2>/dev/null
@@ -7134,7 +7167,7 @@ function _p9k_clear_instant_prompt() {
     >&2 echo -E - "${(%):-    * You %Bwill not%b see this error message again.}"
     >&2 echo -E - "${(%):-    * Zsh will start %Bquickly%b and %Bwithout%b prompt flickering.}"
     >&2 echo -E - ""
-    >&2 echo -E - "${(%):-  - Find where %Bprompt_cr%b option gets sets in your zsh configs and stop setting it.}"
+    >&2 echo -E - "${(%):-  - Find where %Bprompt_cr%b option gets set in your zsh configs and stop setting it.}"
     >&2 echo -E - ""
     >&2 echo -E - "${(%):-    * You %Bwill not%b see this error message again.}"
     >&2 echo -E - "${(%):-    * Zsh will start %Bquickly%b and %Bwithout%b prompt flickering.}"
@@ -7150,7 +7183,7 @@ function _p9k_clear_instant_prompt() {
     >&2 echo -E - "${(%):-  - Do nothing.}"
     >&2 echo -E - ""
     >&2 echo -E - "${(%):-    * You %Bwill%b see this error message every time you start zsh.}"
-    >&2 echo -E - "${(%):-    * Zsh will start %Bquckly%b but %Bwith%b prompt flickering.}"
+    >&2 echo -E - "${(%):-    * Zsh will start %Bquickly%b but %Bwith%b prompt flickering.}"
     >&2 echo -E - ""
   fi
 }
@@ -7164,7 +7197,9 @@ function _p9k_do_dump() {
   exec {1}>&-
   (( _p9k__state_dump_fd )) || return
   if (( ! _p9k__instant_prompt_disabled )); then
-    _p9k__instant_prompt_sig=$_p9k__cwd:$P9K_SSH:${(%):-%#}
+    # The ssh bit must be computed exactly like in the instant prompt script, which cannot
+    # afford the `who` fallback that P9K_SSH may come from.
+    _p9k__instant_prompt_sig=$_p9k__cwd:$((${#SSH_CLIENT}+${#SSH_TTY}+${#SSH_CONNECTION} > 0)):${(%):-%#}
     _p9k_set_instant_prompt
     _p9k_dump_instant_prompt
     # The set is persisted in the state dump; keep it (and the list of visited dirs) bounded.
@@ -7179,7 +7214,7 @@ function _p9k_do_dump() {
 function _p9k_should_dump() {
   (( __p9k_dumps_enabled && ! _p9k__state_dump_fd )) || return
   (( _p9k__state_dump_scheduled || _p9k__prompt_idx == 1 )) && return
-  _p9k__instant_prompt_sig=$_p9k__cwd:$P9K_SSH:${(%):-%#}
+  _p9k__instant_prompt_sig=$_p9k__cwd:$((${#SSH_CLIENT}+${#SSH_TTY}+${#SSH_CONNECTION} > 0)):${(%):-%#}
   (( ! $+_p9k_dumped_instant_prompt_sigs[$_p9k__instant_prompt_sig] ))
 }
 
@@ -9959,7 +9994,8 @@ zmodload zsh/terminfo
 zmodload zsh/zleparameter
 zmodload -F zsh/stat b:zstat
 zmodload -F zsh/net/socket b:zsocket
-zmodload -F zsh/files b:zf_chmod b:zf_mkdir b:zf_mv b:zf_rm
+zmodload -F zsh/files b:zf_mkdir b:zf_mv b:zf_rm
+zmodload -F zsh/files b:zf_chmod 2>/dev/null  # zsh >= 5.8
 
 if [[ $__p9k_dump_file != $__p9k_instant_prompt_dump_file && -n $__p9k_instant_prompt_dump_file ]]; then
   _p9k_delete_instant_prompt
