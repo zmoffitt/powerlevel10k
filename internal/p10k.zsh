@@ -2318,13 +2318,17 @@ prompt_go_version() {
   # With GOTOOLCHAIN=auto (the default) go switches to, and downloads, the toolchain requested
   # by go.mod/go.work in the current directory. The output is cached regardless of the
   # directory, so pin the toolchain that applies outside of modules. Keep <name>+path as is:
-  # a bare <name> would let go download it when it's not installed. GO111MODULE=off stops go
-  # from consulting go.mod/go.work at all, so even +path can't pick a directory-dependent
-  # toolchain (and fail when it's not on PATH).
+  # a bare <name> would let go download it when it's not installed. For a pinned toolchain,
+  # run go from / (-C exists since go 1.20, pins since 1.21) so that the go.mod/go.work of
+  # the current directory cannot override the pin with a directory-dependent toolchain.
   local toolchain=${GOTOOLCHAIN%+auto}
   [[ $toolchain == (|auto|path|local+path) ]] && toolchain=local
-  local -x GOTOOLCHAIN=$toolchain GO111MODULE=off
-  _p9k_cached_cmd 0 '' go version || return
+  local -x GOTOOLCHAIN=$toolchain
+  if [[ $toolchain == local ]]; then
+    _p9k_cached_cmd 0 '' go version || return
+  else
+    _p9k_cached_cmd 0 '' go -C / version || return
+  fi
   [[ $_p9k__ret == (#b)*go([[:digit:].]##)* ]] || return
   local v=$match[1]
   if (( _POWERLEVEL9K_GO_VERSION_PROJECT_ONLY )); then
@@ -2346,6 +2350,9 @@ prompt_go_version() {
             goenv=${XDG_CONFIG_HOME:-$HOME/.config}/go/env
           fi
         fi
+        # GOPATH doesn't depend on the toolchain; with modules off go never switches toolchains
+        # (and never fails because a pinned one is missing).
+        local -x GO111MODULE=off
         _p9k_cached_cmd 0 "$goenv" go env GOPATH && p=$_p9k__ret && [[ -n $p ]] || return
       fi
     fi
@@ -5019,10 +5026,15 @@ prompt_java_version() {
     local -a names=(.java-version .tool-versions mise.toml .mise.toml mise.local.toml .mise.local.toml)
     # mise also reads config files inside subdirectories (creating or editing them doesn't
     # touch the parent directory) and per-environment files. These are always dependencies.
-    local -a mise_names=(.config/mise.toml .config/mise/config.toml mise/config.toml .mise/config.toml)
+    local -a mise_names=(
+      .config/mise.toml .config/mise/config.toml mise/config.toml .mise/config.toml
+      .config/mise.local.toml .config/mise/config.local.toml mise/config.local.toml .mise/config.local.toml)
     local mise_env
     for mise_env in ${(s:,:)MISE_ENV}; do
-      mise_names+=(mise.$mise_env.toml .mise.$mise_env.toml)
+      mise_names+=(
+        mise.$mise_env.toml .mise.$mise_env.toml mise.$mise_env.local.toml .mise.$mise_env.local.toml
+        .config/mise.$mise_env.toml .config/mise/config.$mise_env.toml mise/config.$mise_env.toml .mise/config.$mise_env.toml)
+      file_deps+=($mise_cfg/config.$mise_env.toml $mise_cfg/config.$mise_env.local.toml)
     done
     local -i i
     for ((i = 1; i <= $#_p9k__parent_dirs; ++i)); do
@@ -8532,13 +8544,15 @@ function _p9k_deschedule_redraw() {
 
 # Called by compsys (_main_complete) at the start of every completion. Menu selection runs after
 # _main_complete returns but before the completion widget does, and zle-line-pre-redraw runs on
-# every move through the menu with LASTWIDGET naming the completion widget. _p9k_on_complete_post
-# keeps _p9k__comp_active set only when such a menu is about to be shown; it stays set until
-# LASTWIDGET names some other widget. Completions started from a zle -F handler or from within
-# another widget (zsh-autocomplete and the like) are not followed by a menu and clear it right away.
+# every move through the menu. While the completion widget (menu selection included) is still
+# running, LASTWIDGET keeps naming the widget that ran before it, so that is what we remember;
+# once the completion widget returns, LASTWIDGET changes and _p9k__comp_active is cleared.
+# _p9k_on_complete_post keeps the flag set only when a menu is about to be shown. Completions
+# started from a zle -F handler or from within another widget (zsh-autocomplete and the like)
+# are not followed by a menu and clear it right away.
 function _p9k_on_complete() {
   eval "$__p9k_intro"
-  _p9k__comp_widget=${WIDGET-}
+  _p9k__comp_widget=${LASTWIDGET-}
   _p9k__comp_active=1
   # _main_complete empties compprefuncs and comppostfuncs before calling the functions in them.
   (( ${compprefuncs[(Ie)_p9k_on_complete]} )) || compprefuncs+=(_p9k_on_complete)
@@ -10223,7 +10237,7 @@ if [[ $__p9k_dump_file != $__p9k_instant_prompt_dump_file && -n $__p9k_instant_p
   zf_rm -f -- $__p9k_instant_prompt_dump_file{,.zwc} 2>/dev/null
 fi
 
-typeset -g P9K_VERSION=1.20.19-zm.3
+typeset -g P9K_VERSION=1.20.19-zm.4
 
 if [[ ${VSCODE_SHELL_INTEGRATION-} == <1-> && ${+__p9k_force_term_shell_integration} == 0 ]]; then
   typeset -gri __p9k_force_term_shell_integration=1
