@@ -4178,20 +4178,20 @@ function _p9k_vcs_render() {
             $#VCS_STATUS_LOCAL_BRANCH > _POWERLEVEL9K_VCS_SHORTEN_MIN_LENGTH &&
             $#VCS_STATUS_LOCAL_BRANCH > _POWERLEVEL9K_VCS_SHORTEN_LENGTH )) &&
          [[ $_POWERLEVEL9K_VCS_SHORTEN_STRATEGY == (truncate_middle|truncate_from_right) ]]; then
-        branch+=${VCS_STATUS_LOCAL_BRANCH[1,_POWERLEVEL9K_VCS_SHORTEN_LENGTH]//\%/%%}${_POWERLEVEL9K_VCS_SHORTEN_DELIMITER}
+        branch+=${(V)${VCS_STATUS_LOCAL_BRANCH[1,_POWERLEVEL9K_VCS_SHORTEN_LENGTH]}//\%/%%}${_POWERLEVEL9K_VCS_SHORTEN_DELIMITER}
         if [[ $_POWERLEVEL9K_VCS_SHORTEN_STRATEGY == truncate_middle ]]; then
           _p9k_vcs_style $state BRANCH
-          branch+=${_p9k__ret}${VCS_STATUS_LOCAL_BRANCH[-_POWERLEVEL9K_VCS_SHORTEN_LENGTH,-1]//\%/%%}
+          branch+=${_p9k__ret}${(V)${VCS_STATUS_LOCAL_BRANCH[-_POWERLEVEL9K_VCS_SHORTEN_LENGTH,-1]}//\%/%%}
         fi
       else
-        branch+=${VCS_STATUS_LOCAL_BRANCH//\%/%%}
+        branch+=${(V)VCS_STATUS_LOCAL_BRANCH//\%/%%}
       fi
       _$0_fmt BRANCH $branch
     fi
 
     if [[ $_POWERLEVEL9K_VCS_HIDE_TAGS == 0 && -n $VCS_STATUS_TAG ]]; then
       _p9k_get_icon prompt_vcs_$state VCS_TAG_ICON
-      _$0_fmt TAG " $_p9k__ret${VCS_STATUS_TAG//\%/%%}"
+      _$0_fmt TAG " $_p9k__ret${(V)VCS_STATUS_TAG//\%/%%}"
     fi
 
     if [[ -n $VCS_STATUS_ACTION ]]; then
@@ -4200,7 +4200,7 @@ function _p9k_vcs_render() {
       if [[ -n $VCS_STATUS_REMOTE_BRANCH &&
             $VCS_STATUS_LOCAL_BRANCH != $VCS_STATUS_REMOTE_BRANCH ]]; then
         _p9k_get_icon prompt_vcs_$state VCS_REMOTE_BRANCH_ICON
-        _$0_fmt REMOTE_BRANCH " $_p9k__ret${VCS_STATUS_REMOTE_BRANCH//\%/%%}"
+        _$0_fmt REMOTE_BRANCH " $_p9k__ret${(V)VCS_STATUS_REMOTE_BRANCH//\%/%%}"
       fi
       if [[ $VCS_STATUS_HAS_STAGED == 1 || $VCS_STATUS_HAS_UNSTAGED == 1 || $VCS_STATUS_HAS_UNTRACKED == 1 ]]; then
         _p9k_get_icon prompt_vcs_$state VCS_DIRTY_ICON
@@ -4515,7 +4515,7 @@ prompt_virtualenv() {
       v=${VIRTUAL_ENV:h:t}
     fi
   fi
-  msg+="$_POWERLEVEL9K_VIRTUALENV_LEFT_DELIMITER${v//\%/%%}$_POWERLEVEL9K_VIRTUALENV_RIGHT_DELIMITER"
+  msg+="$_POWERLEVEL9K_VIRTUALENV_LEFT_DELIMITER${(V)v//\%/%%}$_POWERLEVEL9K_VIRTUALENV_RIGHT_DELIMITER"
   case $_POWERLEVEL9K_VIRTUALENV_SHOW_WITH_PYENV in
     false)
       _p9k_prompt_segment "$0" "blue" "$_p9k_color1" 'PYTHON_ICON' 0 '${(M)${#P9K_PYENV_PYTHON_VERSION}:#0}' "$msg"
@@ -4543,13 +4543,17 @@ function _p9k_read_pyenv_like_version_file() {
     _p9k__ret=${cached#*:}
   else
     local fd content
-    {
-      { sysopen -r -u fd -- $1 && sysread -i $fd -s 1024 content } 2>/dev/null
-    } always {
-      [[ -n $fd ]] && exec {fd}>&-
-    }
+    # Only regular files: a FIFO or a symlink to /dev/tty would block the prompt.
+    if [[ -f $1 ]]; then
+      {
+        { sysopen -r -u fd -- $1 && sysread -i $fd -s 1024 content } 2>/dev/null
+      } always {
+        [[ -n $fd ]] && exec {fd}>&-
+      }
+    fi
     local MATCH
-    local versions=(${${${${(f)content}/(#m)*/${MATCH[(w)1]}}##\#*}#$2})
+    # Strip CR like pyenv does so that version files with CRLF line endings work.
+    local versions=(${${${${(f)${content//$'\r'}}/(#m)*/${MATCH[(w)1]}}##\#*}#$2})
     _p9k__ret=${(j.:.)versions}
     _p9k__read_pyenv_like_version_file_cache[$1:$2]=$stat[1]:$_p9k__ret
   fi
@@ -4818,7 +4822,7 @@ prompt_kubecontext() {
   typeset -g P9K_KUBECONTEXT_CLOUD_ZONE=$_p9k__cache_val[7]
   typeset -g P9K_KUBECONTEXT_CLOUD_CLUSTER=$_p9k__cache_val[8]
   [[ -n $_p9k__cache_val[9] ]] || return
-  _p9k_prompt_segment $0$_p9k__cache_val[10] magenta white KUBERNETES_ICON 0 '' "${_p9k__cache_val[9]//\%/%%}"
+  _p9k_prompt_segment $0$_p9k__cache_val[10] magenta white KUBERNETES_ICON 0 '' "${(V)_p9k__cache_val[9]//\%/%%}"
 }
 
 _p9k_prompt_kubecontext_init() {
@@ -4852,8 +4856,17 @@ prompt_java_version() {
     _p9k_upglob 'pom.xml|build.gradle.kts|build.sbt|deps.edn|project.clj|build.boot|*.(java|class|jar|gradle|clj|cljc)' -. && return
   fi
 
-  local java=$commands[java]
-  if ! _p9k_cache_stat_get $0 $java ${JAVA_HOME:+$JAVA_HOME/release}; then
+  local java=$commands[java] label=$0
+  local -a file_deps
+  if [[ $java == */shims/java ]]; then
+    # jenv, asdf and mise shims pick the Java version per directory behind a fixed path.
+    label+=" ${(q)JENV_VERSION} ${(q)ASDF_JAVA_VERSION} ${(q)MISE_JAVA_VERSION}"
+    file_deps=(${JENV_ROOT:-$HOME/.jenv}/version $HOME/.tool-versions)
+    _p9k_upglob '.java-version|.tool-versions' -.
+    local -i idx=$?
+    (( idx )) && file_deps+=($_p9k__parent_dirs[idx]/.java-version $_p9k__parent_dirs[idx]/.tool-versions)
+  fi
+  if ! _p9k_cache_stat_get $label $java ${JAVA_HOME:+$JAVA_HOME/release} $file_deps; then
     local v
     v="$(java -fullversion 2>&1)" || v=
     v=${${v#*\"}%\"*}
@@ -4889,7 +4902,7 @@ prompt_azure() {
       break
     fi
   done
-  _p9k_prompt_segment "$0$state" "blue" "white" "AZURE_ICON" 0 '' "${name//\%/%%}"
+  _p9k_prompt_segment "$0$state" "blue" "white" "AZURE_ICON" 0 '' "${(V)name//\%/%%}"
 }
 
 _p9k_prompt_azure_init() {
@@ -4913,8 +4926,13 @@ _p9k_gcloud_prefetch() {
   # P9K_GCLOUD_PROJECT is deprecated; it's always equal to P9K_GCLOUD_PROJECT_ID
   unset P9K_GCLOUD_CONFIGURATION P9K_GCLOUD_ACCOUNT P9K_GCLOUD_PROJECT P9K_GCLOUD_PROJECT_ID P9K_GCLOUD_PROJECT_NAME
   (( $+commands[gcloud] )) || return
-  _p9k_read_word ${CLOUDSDK_CONFIG:-~/.config/gcloud}/active_config || return
-  P9K_GCLOUD_CONFIGURATION=$_p9k__ret
+  # gcloud gives CLOUDSDK_ACTIVE_CONFIG_NAME precedence over active_config.
+  if [[ -n $CLOUDSDK_ACTIVE_CONFIG_NAME ]]; then
+    P9K_GCLOUD_CONFIGURATION=$CLOUDSDK_ACTIVE_CONFIG_NAME
+  else
+    _p9k_read_word ${CLOUDSDK_CONFIG:-~/.config/gcloud}/active_config || return
+    P9K_GCLOUD_CONFIGURATION=$_p9k__ret
+  fi
   if ! _p9k_cache_stat_get $0 ${CLOUDSDK_CONFIG:-~/.config/gcloud}/configurations/config_$P9K_GCLOUD_CONFIGURATION; then
     local pair account project_id
     pair="$(gcloud config configurations describe $P9K_GCLOUD_CONFIGURATION \
@@ -4929,6 +4947,11 @@ _p9k_gcloud_prefetch() {
   fi
   if [[ -n $_p9k__cache_val[2] ]]; then
     P9K_GCLOUD_PROJECT_ID=$_p9k__cache_val[2]
+  fi
+  # Environment variables override the properties of the configuration.
+  [[ -n $CLOUDSDK_CORE_ACCOUNT ]] && P9K_GCLOUD_ACCOUNT=$CLOUDSDK_CORE_ACCOUNT
+  [[ -n $CLOUDSDK_CORE_PROJECT ]] && P9K_GCLOUD_PROJECT_ID=$CLOUDSDK_CORE_PROJECT
+  if [[ -n $P9K_GCLOUD_PROJECT_ID ]]; then
     P9K_GCLOUD_PROJECT=$P9K_GCLOUD_PROJECT_ID  # deprecated parameter; set for backward compatibility
   fi
   if [[ $P9K_GCLOUD_CONFIGURATION == $_p9k_gcloud_configuration &&
@@ -5011,7 +5034,7 @@ prompt_google_app_cred() {
   P9K_GOOGLE_APP_CRED_TYPE=$_p9k__cache_val[2]
   P9K_GOOGLE_APP_CRED_PROJECT_ID=$_p9k__cache_val[3]
   P9K_GOOGLE_APP_CRED_CLIENT_EMAIL=$_p9k__cache_val[4]
-  _p9k_prompt_segment "$0$_p9k__cache_val[6]" "blue" "white" "GCLOUD_ICON" 0 '' "$_p9k__cache_val[5]"
+  _p9k_prompt_segment "$0$_p9k__cache_val[6]" "blue" "white" "GCLOUD_ICON" 0 '' "${(V)_p9k__cache_val[5]//\%/%%}"
 }
 
 _p9k_prompt_google_app_cred_init() {
@@ -5038,8 +5061,14 @@ function _p9k_fetch_nordvpn_status() {
     local val
     local -i len n wire tag
     {
-      IFS='' read -t 0.25 -r val
-      val=$'\n'
+      # Skip everything up to the first newline. Unlike `read -t`, which times out only while
+      # waiting for the first byte, this is bounded by 0.25s per byte and 4096 bytes in total.
+      for (( n = 0; n < 4096; ++n )); do
+        [[ -t $fd ]] || true  # https://www.zsh.org/mla/workers/2020/msg00207.html
+        sysread -s 1 -t 0.25 val
+        [[ $val == $'\n' ]] && break
+      done
+      (( n < 4096 ))
       while true; do
         tag=$((#val))
         wire='tag & 7'
