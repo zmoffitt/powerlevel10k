@@ -89,7 +89,7 @@ class Repo {
   int OnDelta(const char* type, const git_diff_delta& d, std::atomic<size_t>& c1, size_t m1,
               const std::atomic<size_t>& c2, size_t m2);
 
-  void StartStagedScan(const git_oid* head);
+  void StartStagedScan(const git_oid* head, git_tree** tree_out);
   void StartDirtyScan(const std::vector<const char*>& paths);
 
   void DecInflight();

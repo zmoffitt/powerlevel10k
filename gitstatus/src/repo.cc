@@ -104,7 +104,13 @@ bool Repo::Shard::Contains(Str<> str, StringView path) const {
 Repo::Repo(git_repository* repo, Limits lim) : lim_(std::move(lim)), repo_(repo), tag_db_(repo) {
   if (lim_.max_num_untracked) {
     GlobalThreadPool()->Schedule([this] {
-      bool check = CheckDirMtime(git_repository_path(repo_));
+      // The probe runs in gitdir but the cache is used for workdir. Trust it only if they are on
+      // the same filesystem.
+      const char* workdir = git_repository_workdir(repo_);
+      struct stat gitdir_st, workdir_st;
+      bool check = workdir && !stat(git_repository_path(repo_), &gitdir_st) &&
+                   !stat(workdir, &workdir_st) && gitdir_st.st_dev == workdir_st.st_dev &&
+                   CheckDirMtime(git_repository_path(repo_));
       std::unique_lock<std::mutex> lock(mutex_);
       CHECK(Load(untracked_cache_) == Tribool::kUnknown);
       Store(untracked_cache_, check ? Tribool::kTrue : Tribool::kFalse);
@@ -118,7 +124,7 @@ Repo::Repo(git_repository* repo, Limits lim) : lim_(std::move(lim)), repo_(repo)
 Repo::~Repo() {
   {
     std::unique_lock<std::mutex> lock(mutex_);
-    while (untracked_cache_ == Tribool::kUnknown) cv_.wait(lock);
+    while (untracked_cache_ == Tribool::kUnknown || inflight_) cv_.wait(lock);
   }
   if (git_index_) git_index_free(git_index_);
   git_repository_free(repo_);
@@ -162,6 +168,12 @@ IndexStats Repo::GetIndexStats(const git_oid* head, git_config* cfg) {
   }
 
   UpdateShards();
+  // Async tasks reference lim_, git_index_ and staged_tree. They must finish even if we throw.
+  git_tree* staged_tree = nullptr;
+  ON_SCOPE_EXIT(&) {
+    if (staged_tree) git_tree_free(staged_tree);
+  };
+  ON_SCOPE_EXIT(this) { Wait(); };
   Store(error_, false);
   Store(unstaged_, {});
   Store(untracked_, {});
@@ -169,6 +181,7 @@ IndexStats Repo::GetIndexStats(const git_oid* head, git_config* cfg) {
 
   std::vector<const char*> dirty_candidates;
   const size_t index_size = git_index_entrycount(git_index_);
+  const git_oid* new_head = nullptr;
 
   if (!lim_.max_num_staged && !lim_.max_num_conflicted) {
     head_ = {};
@@ -183,14 +196,16 @@ IndexStats Repo::GetIndexStats(const git_oid* head, git_config* cfg) {
       LOG(INFO) << "Index and HEAD unchanged; staged = " << Load(staged_)
                 << ", conflicted = " << Load(conflicted_);
     } else {
-      head_ = *head;
+      // Remember HEAD only after the staged scan succeeds.
+      head_ = {};
+      new_head = head;
       Store(staged_, {});
       Store(conflicted_, {});
       Store(staged_new_, {});
       Store(staged_deleted_, {});
       Store(skip_worktree_, {});
       Store(assume_unchanged_, {});
-      StartStagedScan(head);
+      StartStagedScan(head, &staged_tree);
     }
   } else {
     head_ = {};
@@ -227,6 +242,7 @@ IndexStats Repo::GetIndexStats(const git_oid* head, git_config* cfg) {
 
   Wait();
   VERIFY(!Load(error_));
+  if (new_head) head_ = *new_head;
 
   size_t num_staged = std::min(Load(staged_), lim_.max_num_staged);
   size_t num_unstaged = std::min(Load(unstaged_), lim_.max_num_unstaged);
@@ -323,12 +339,14 @@ void Repo::StartDirtyScan(const std::vector<const char*>& paths) {
   }
 }
 
-void Repo::StartStagedScan(const git_oid* head) {
+void Repo::StartStagedScan(const git_oid* head, git_tree** tree_out) {
   git_commit* commit = nullptr;
   VERIFY(!git_commit_lookup(&commit, repo_, head)) << GitError();
   ON_SCOPE_EXIT(=) { git_commit_free(commit); };
   git_tree* tree = nullptr;
   VERIFY(!git_commit_tree(&tree, commit)) << GitError();
+  // The caller frees the tree after all tasks are done.
+  *tree_out = tree;
 
   git_diff_options opt = GIT_DIFF_OPTIONS_INIT;
   opt.flags = GIT_DIFF_EXEMPLARS | GIT_DIFF_INCLUDE_TYPECHANGE_TREES;
@@ -494,6 +512,10 @@ std::future<std::string> Repo::GetTagName(const git_oid* target) {
       promise->set_value(tag_db_.TagForCommit(*target));
     } catch (const Exception&) {
       promise->set_exception(std::current_exception());
+    } catch (const std::exception& e) {
+      // Only Exception is handled by the caller. Anything else would terminate the process.
+      LOG(ERROR) << "TagForCommit: " << e.what();
+      promise->set_exception(std::make_exception_ptr(Exception()));
     }
   });
 

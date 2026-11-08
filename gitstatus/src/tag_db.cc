@@ -193,6 +193,8 @@ void TagDb::UpdatePack() {
       int fd = open(pack_path.c_str(), O_RDONLY | O_CLOEXEC);
       VERIFY(fd >= 0);
       ON_SCOPE_EXIT(&) { CHECK(!close(fd)) << Errno(); };
+      // Avoid std::bad_alloc (which would terminate the process) on huge or sparse files.
+      VERIFY(st.st_size >= 0 && st.st_size < (off_t{1} << 30)) << "Too large: " << st.st_size;
       pack_.resize(st.st_size + 1);
       ssize_t n = read(fd, &pack_[0], st.st_size + 1);
       VERIFY(n >= 0) << Errno();
@@ -303,9 +305,11 @@ bool TagDb::TagHasTarget(const char* name, const git_oid* target) const {
 
   for (int i = 0; i != kMaxDerefCount && git_reference_type(ref) == GIT_REFERENCE_SYMBOLIC; ++i) {
     git_reference* dst;
-    const char* ref_name = git_reference_name(ref);
+    const char* ref_name = git_reference_symbolic_target(ref);
+    if (!ref_name) return false;
     if (git_refdb_lookup(&dst, refdb_, ref_name)) {
       const char* tag_name = StripTag(ref_name);
+      if (!tag_name) return false;
       auto it = std::lower_bound(name2id_.begin(), name2id_.end(), tag_name, ByName);
       return it != name2id_.end() && !strcmp((*it)->name, tag_name) && !IsLooseTag(tag_name) &&
              git_oid_equal(&(*it)->id, target);

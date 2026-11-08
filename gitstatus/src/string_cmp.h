@@ -31,6 +31,9 @@ namespace gitstatus {
 
 // WARNING: These routines assume no embedded null characters in StringView. Violations cause UB.
 
+// Compare bytes as unsigned regardless of -funsigned-char, the same way memcmp and strcmp do.
+inline int Uchar(char c) { return static_cast<unsigned char>(c); }
+
 template <int kCaseSensitive = -1>
 struct StrCmp;
 
@@ -45,12 +48,12 @@ struct StrCmp<0> {
 
   int operator()(StringView x, const char* y) const {
     for (const char *p = x.ptr, *e = p + x.len; p != e; ++p, ++y) {
-      if (int cmp = std::tolower(*p) - std::tolower(*y)) return cmp;
+      if (int cmp = std::tolower(Uchar(*p)) - std::tolower(Uchar(*y))) return cmp;
     }
-    return 0 - *y;
+    return 0 - Uchar(*y);
   }
 
-  int operator()(char x, char y) const { return std::tolower(x) - std::tolower(y); }
+  int operator()(char x, char y) const { return std::tolower(Uchar(x)) - std::tolower(Uchar(y)); }
   int operator()(const char* x, const char* y) const { return strcasecmp(x, y); }
   int operator()(const char* x, StringView y) const { return -operator()(y, x); }
 };
@@ -66,12 +69,12 @@ struct StrCmp<1> {
 
   int operator()(StringView x, const char* y) const {
     for (const char *p = x.ptr, *e = p + x.len; p != e; ++p, ++y) {
-      if (int cmp = *p - *y) return cmp;
+      if (int cmp = Uchar(*p) - Uchar(*y)) return cmp;
     }
-    return 0 - *y;
+    return 0 - Uchar(*y);
   }
 
-  int operator()(char x, char y) const { return x - y; }
+  int operator()(char x, char y) const { return Uchar(x) - Uchar(y); }
   int operator()(const char* x, const char* y) const { return std::strcmp(x, y); }
   int operator()(const char* x, StringView y) const { return -operator()(y, x); }
 };
