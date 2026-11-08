@@ -8,6 +8,19 @@ _gitstatus_install_daemon_found() {
   [ $# = 0 ] || "$@" "$daemon" "$version" "$installed"
 }
 
+# Succeeds if all arguments are owned by the current user or by root.
+_gitstatus_install_owned() {
+  local f
+  for f in "$@"; do
+    [ -O "$f" ] || [ -n "$(command find -H "$f" -prune -user 0 2>/dev/null)" ] || return
+  done
+}
+
+# Succeeds if any argument is writable by group or others.
+_gitstatus_install_shared() {
+  [ -n "$(command find -H "$@" -prune \( -perm -020 -o -perm -002 \) 2>/dev/null)" ]
+}
+
 _gitstatus_install_main() {
   if [ -n "${ZSH_VERSION:-}" ]; then
     emulate -L sh -o no_unset
@@ -18,7 +31,7 @@ _gitstatus_install_main() {
   local argv1="$1"
   shift
 
-  local no_check= no_install= uname_s= uname_m= gitstatus_dir= dl_status= e=
+  local no_check= no_install= uname_s= uname_m= gitstatus_dir= dl_status= e= rejected=
   local opt= OPTARG= OPTIND=1
 
   while getopts ':s:m:d:p:e:fnh' opt "$@"; do
@@ -147,7 +160,7 @@ END
 
   if [ -z "$no_check" ]; then
     if [ -n "${daemon##/*}" ]; then
-      >&2 echo "[gitstatus] error: GITSTATUS_DAEMON is not absolute path: $daemon"
+      >&"$e" echo "[gitstatus] error: GITSTATUS_DAEMON is not absolute path: $daemon"
       return 1
     fi
     if [ -z "$daemon" -a -e "$gitstatus_dir"/usrbin/gitstatusd ]; then
@@ -205,9 +218,19 @@ END
         # A cached binary was verified when it was downloaded; only trust it if nobody else
         # could have replaced it since. Otherwise download (and verify) a fresh copy.
         if [ -n "$daemon" ]; then
-          if ! [ -O "$daemon" ] && [ -z "$(command find -H "$daemon" -prune -user 0 2>/dev/null)" ] ||
-             [ -n "$(command find -H "$daemon" "$cache_dir" -prune \( -perm -020 -o -perm -002 \) 2>/dev/null)" ]; then
-            >&2 echo "[gitstatus] warning: ignoring cached $daemon: not owned by you or writable by others"
+          if ! command -v find >/dev/null 2>&1; then
+            rejected="cannot check its permissions without find"
+          elif [ ! -f "$daemon" ] || [ -h "$daemon" ]; then
+            rejected="not a regular file"
+          elif ! _gitstatus_install_owned "$daemon" "$cache_dir"; then
+            rejected="it or its directory is not owned by you"
+          elif _gitstatus_install_shared "$daemon" "$cache_dir"; then
+            # Typically the result of umask 002. The download below tightens the permissions.
+            rejected="it or its directory is writable by others"
+          fi
+          if [ -n "$rejected" ]; then
+            rejected="ignoring cached $daemon: $rejected"
+            >&2 echo "[gitstatus] warning: $rejected"
             daemon=
           fi
         fi
@@ -221,14 +244,15 @@ END
     # No suitable gitstatusd exists. Need to download.
 
     if [ -n "$no_install" ]; then
-      >&2 echo "[gitstatus] error: no gitstatusd found and installation is disabled"
+      >&"$e" echo "[gitstatus] error: no gitstatusd found and installation is disabled"
+      [ -z "$rejected" ] || >&"$e" echo "[gitstatus] $rejected"
       return 1
     fi
 
     local daemon="$cache_dir"/"$file"
 
     if [ -n "${cache_dir##/*}" ]; then
-      >&2 echo "[gitstatus] error: GITSTATUS_CACHE_DIR is not absolute: $cache_dir"
+      >&"$e" echo "[gitstatus] error: GITSTATUS_CACHE_DIR is not absolute: $cache_dir"
       return 1
     fi
     if [ ! -d "$cache_dir" ] && ! mkdir -p -- "$cache_dir" || [ ! -w "$cache_dir" ]; then
@@ -253,6 +277,16 @@ END
       done
       return 1
     fi
+
+    # Download only into a directory that nobody else can modify, so that the binary passes the
+    # check of cached binaries above on the next start.
+    if ! [ -O "$cache_dir" ]; then
+      >&"$e" printf 'Directory is not owned by you: \033[4;31m%s\033[0m\n' "$cache_dir"
+      >&"$e" printf '\n'
+      >&"$e" printf 'Set \033[1mGITSTATUS_CACHE_DIR\033[0m to a directory you own, then restart your shell.\n'
+      return 1
+    fi
+    command chmod go-w -- "$cache_dir" 2>/dev/null
 
     if [ -n "${TMPDIR-}" -a '(' '(' -d "${TMPDIR-}" -a -w "${TMPDIR-}" ')' -o '!' '(' -d /tmp -a -w /tmp ')' ')' ]; then
       local tmp="$TMPDIR"
@@ -311,15 +345,12 @@ END
         # The only reason for suppressing stderr is that `curl -f` cannot be silenced:
         # `-s` doesn't work despite what the docs say.
         command "$@" 2>/dev/null &
+        pid="$!"
+        die="trap - $sig; kill -- $pid 2>/dev/null; wait -- $pid 2>/dev/null; exit 1"
+        trap "$die" $sig
+        [ -z "$trapped" ] || eval "$die"
+        wait -- "$pid" 2>/dev/null
         ret="$?"
-        if [ "$ret" = 0 ]; then
-          pid="$!"
-          die="trap - $sig; kill -- $pid 2>/dev/null; wait -- $pid 2>/dev/null; exit 1"
-          trap "$die" $sig
-          [ -z "$trapped" ] || eval "$die"
-          wait -- "$pid" 2>/dev/null
-          ret="$?"
-        fi
         trap - $sig
         [ -z "$trapped" ] || exit
         return "$ret"
@@ -398,9 +429,14 @@ END
       local trapped=
       trap 'trapped=1' $sig
       fetch 1 "$url1" &
-      local pid1="$!"
-      fetch 2 "$url2" &
-      local pid2="$!"
+      local pid1="$!" pid2=
+      # GITSTATUS_DOWNLOAD_MIRROR=0 disables the fallback download from gitee.com.
+      if [ "${GITSTATUS_DOWNLOAD_MIRROR:-1}" != 0 ]; then
+        fetch 2 "$url2" &
+        pid2="$!"
+      else
+        url2=
+      fi
 
       local die="trap - $sig; kill -- $pid1 $pid2 2>/dev/null; wait -- $pid1 $pid2 2>/dev/null; exit 1"
       trap "$die" $sig
@@ -457,7 +493,7 @@ END
         >&"$e" printf 'Failed to download \033[32m%s\033[0m from any mirror:\n' "$file"
         >&"$e" printf '\n'
         >&"$e" printf '  1. \033[4m%s\033[0m\n' "$url1"
-        >&"$e" printf '  2. \033[4m%s\033[0m\n' "$url2"
+        [ -z "$url2" ] || >&"$e" printf '  2. \033[4m%s\033[0m\n' "$url2"
         >&"$e" printf '\n'
         >&"$e" printf 'Check your internet connection, then restart your shell.\n'
         exit 1
@@ -472,6 +508,7 @@ END
       fi
 
       command mv -f -- "$tmpdir"/"$file" "$tmpfile" || exit
+      command chmod go-w -- "$tmpfile" 2>/dev/null
       command mv -f -- "$tmpfile" "$cache_dir"/"$file" && exit
       command rm -f -- "$cache_dir"/"$file"
       command mv -f -- "$tmpfile" "$cache_dir"/"$file" && exit
