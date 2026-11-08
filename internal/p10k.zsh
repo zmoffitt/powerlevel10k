@@ -3427,12 +3427,39 @@ _p9k_prompt_rust_version_compute() {
     _p9k_prompt_rust_version_sync
 }
 
+# Fails if the nearest rust-toolchain file above $1 is owned by another user or selects a
+# toolchain by path. The rustup proxy would exec <path>/bin/rustc from such a file.
+_p9k_rust_toolchain_safe() {
+  local dir=$1 f line
+  local -a stat
+  while true; do
+    local -i found=0
+    for f in $dir/rust-toolchain $dir/rust-toolchain.toml; do
+      [[ -e $f || -L $f ]] || continue
+      found=1
+      [[ -f $f && -r $f ]] || return 1
+      zstat -A stat +uid -- $f 2>/dev/null || return 1
+      (( stat[1] == EUID || stat[1] == 0 )) || return 1
+      local content="$(<$f)"
+      for line in ${(f)content}; do
+        line=${line//[[:space:]]/}
+        [[ $line == *path=* || $line == *path[\"\']=* ]] && return 1
+      done
+      [[ $content == *=* || $content != */* ]] || return 1
+    done
+    (( found )) && return 0
+    [[ $dir == / || $dir == . || -z $dir ]] && return 0
+    dir=${dir:h}
+  done
+}
+
 _p9k_prompt_rust_version_async() {
   typeset -g P9K_RUST_VERSION=$1
   local rustc=$2 cwd=$3 v
-  if pushd -q -- $cwd; then
+  if _p9k_rust_toolchain_safe $cwd && pushd -q -- $cwd; then
     {
-      v=${${"$($rustc --version)"#rustc }%% *} || v=
+      # RUSTUP_AUTO_INSTALL=0: don't download the toolchain named by rust-toolchain.
+      v=${${"$(RUSTUP_AUTO_INSTALL=0 $rustc --version 2>/dev/null)"#rustc }%% *} || v=
     } always {
       popd -q
     }
@@ -3440,13 +3467,16 @@ _p9k_prompt_rust_version_async() {
 
   [[ $v != $P9K_RUST_VERSION ]] || return
   typeset -g P9K_RUST_VERSION=$v
+  # Drop the reply if the user has left $cwd in the meantime.
+  echo -E - "[[ \$_p9k__cwd_a == ${(q)cwd} ]] || return"
   _p9k_print_params P9K_RUST_VERSION
   echo -E - 'reset=1'
 }
 
 _p9k_prompt_rust_version_sync() {
   if [[ -n $REPLY ]]; then
-    eval $REPLY
+    # The first line is the cwd guard for the master shell; the worker's cwd is stale.
+    eval ${REPLY#*$'\n'}
     _p9k_worker_reply $REPLY
   fi
 }
@@ -3516,11 +3546,22 @@ prompt_status() {
     fi
     _p9k__cache_val=(:)
     if (( _POWERLEVEL9K_STATUS_$state )); then
+      # Functions can return codes outside of 0..255 that _p9k_exitcode2str doesn't cover.
+      local code
+      local -a texts=()
       if (( _POWERLEVEL9K_STATUS_SHOW_PIPESTATUS )); then
-        local text=${(j:|:)${(@)_p9k__pipestatus:/(#b)(*)/$_p9k_exitcode2str[$match[1]+1]}}
+        local -a codes=($_p9k__pipestatus)
       else
-        local text=$_p9k_exitcode2str[_p9k__status+1]
+        local -a codes=($_p9k__status)
       fi
+      for code in $codes; do
+        if (( code >= 0 && code <= 255 )); then
+          texts+=("$_p9k_exitcode2str[code+1]")
+        else
+          texts+=("$code")
+        fi
+      done
+      local text=${(j:|:)texts}
       if (( _p9k__status )); then
         if (( !_POWERLEVEL9K_STATUS_CROSS && _POWERLEVEL9K_STATUS_VERBOSE )); then
           _p9k__cache_val=($0_$state red yellow1 CARRIAGE_RETURN_ICON 0 '' "$text")
@@ -3540,7 +3581,7 @@ prompt_status() {
 }
 
 instant_prompt_status() {
-  if (( _POWERLEVEL9K_STATUS_OK )); then
+  if (( _POWERLEVEL9K_STATUS_OK && (_POWERLEVEL9K_STATUS_VERBOSE || _POWERLEVEL9K_STATUS_OK_IN_NON_VERBOSE) )); then
     _p9k_prompt_segment prompt_status_OK "$_p9k_color1" green OK_ICON 0 '' ''
   fi
 }
@@ -3672,7 +3713,7 @@ prompt_symfony2_tests() {
 ################################################################
 # Segment to display Symfony2-Version
 prompt_symfony2_version() {
-  if [[ -r app/bootstrap.php.cache ]]; then
+  if [[ -f app/bootstrap.php.cache && -r app/bootstrap.php.cache ]]; then
     local v="${$(grep -F " VERSION " app/bootstrap.php.cache 2>/dev/null)//[![:digit:].]}"
     _p9k_prompt_segment "$0" "grey35" "$_p9k_color1" 'SYMFONY_ICON' 0 '' "${v//\%/%%}"
   fi
@@ -3814,7 +3855,7 @@ function +vi-git-untracked() {
   # get the root for the current repo or submodule
   local repoTopLevel="$(git rev-parse --show-toplevel 2> /dev/null)"
   # dump out if we're outside a git repository (which includes being in the .git folder)
-  [[ $? != 0 || -z $repoTopLevel ]] && return
+  [[ -z $repoTopLevel ]] && return
 
   local untrackedFiles="$(git ls-files --others --exclude-standard "${repoTopLevel}" 2> /dev/null)"
 
@@ -3845,22 +3886,58 @@ function +vi-git-aheadbehind() {
   hook_com[misc]+=${(j::)gitstatus}
 }
 
+# Branch, tag, remote and bookmark names come from the repository and may contain `%`.
+# vcs_info doesn't escape them, so the hooks below do. hook_com[p9k-escaped] records that
+# hook_com[branch] has been dealt with so that it doesn't get escaped twice.
+function _p9k_vcs_info_escape_branch() {
+  [[ -n ${hook_com[p9k-escaped]} ]] && return 0
+  hook_com[p9k-escaped]=1
+  # Leave the branch alone if a user hook has rewritten it.
+  if [[ ${hook_com[branch]} == "${hook_com[branch_orig]}" ]]; then
+    hook_com[branch]=${hook_com[branch]//\%/%%}
+  fi
+  return 0
+}
+
+# The last set-message hook for all backends.
+function +vi-p9k-escape() {
+  [[ ${hook_com[vcs]} == git* ]] && _p9k_vcs_info_escape_branch
+  if [[ ${hook_com[action]} == "${hook_com[action_orig]}" ]]; then
+    hook_com[action]=${hook_com[action]//\%/%%}
+  fi
+  return 0
+}
+
+# set-branch-format hook for hg and svn: escape the raw name before branchformat is applied.
+function +vi-p9k-escape-branch-format() {
+  hook_com[branch]=${hook_com[branch]//\%/%%}
+  hook_com[revision]=${hook_com[revision]//\%/%%}
+  return 0
+}
+
 function +vi-git-remotebranch() {
   local remote
   local branch_name="${hook_com[branch]}"
+  local pct=%
+  if [[ -z ${hook_com[p9k-escaped]} ]]; then
+    hook_com[p9k-escaped]=1
+    [[ $branch_name == "${hook_com[branch_orig]}" ]] && pct=%%
+  fi
 
   # Are we on a remote-tracking branch?
   remote="$(git rev-parse --verify HEAD@{upstream} --symbolic-full-name 2>/dev/null)"
   remote=${remote/refs\/(remotes|heads)\/}
 
+  # Truncate the raw name and escape the pieces, so that `%%` never gets cut in half.
+  hook_com[branch]=${branch_name//\%/$pct}
   if (( $+_POWERLEVEL9K_VCS_SHORTEN_LENGTH && $+_POWERLEVEL9K_VCS_SHORTEN_MIN_LENGTH )); then
-    if (( ${#hook_com[branch]} > _POWERLEVEL9K_VCS_SHORTEN_MIN_LENGTH && ${#hook_com[branch]} > _POWERLEVEL9K_VCS_SHORTEN_LENGTH )); then
+    if (( ${#branch_name} > _POWERLEVEL9K_VCS_SHORTEN_MIN_LENGTH && ${#branch_name} > _POWERLEVEL9K_VCS_SHORTEN_LENGTH )); then
       case $_POWERLEVEL9K_VCS_SHORTEN_STRATEGY in
         truncate_middle)
-          hook_com[branch]="${branch_name:0:$_POWERLEVEL9K_VCS_SHORTEN_LENGTH}${_POWERLEVEL9K_VCS_SHORTEN_DELIMITER}${branch_name: -$_POWERLEVEL9K_VCS_SHORTEN_LENGTH}"
+          hook_com[branch]="${${branch_name:0:$_POWERLEVEL9K_VCS_SHORTEN_LENGTH}//\%/$pct}${_POWERLEVEL9K_VCS_SHORTEN_DELIMITER}${${branch_name: -$_POWERLEVEL9K_VCS_SHORTEN_LENGTH}//\%/$pct}"
         ;;
         truncate_from_right)
-          hook_com[branch]="${branch_name:0:$_POWERLEVEL9K_VCS_SHORTEN_LENGTH}${_POWERLEVEL9K_VCS_SHORTEN_DELIMITER}"
+          hook_com[branch]="${${branch_name:0:$_POWERLEVEL9K_VCS_SHORTEN_LENGTH}//\%/$pct}${_POWERLEVEL9K_VCS_SHORTEN_DELIMITER}"
         ;;
       esac
     fi
@@ -3875,7 +3952,7 @@ function +vi-git-remotebranch() {
   #if [[ -n ${remote} ]] ; then
   # Only show the remote if it differs from the local
   if [[ -n ${remote} ]] && [[ "${remote#*/}" != "${branch_name}" ]] ; then
-     hook_com[branch]+="$(print_icon 'VCS_REMOTE_BRANCH_ICON')${remote// /}"
+     hook_com[branch]+="$(print_icon 'VCS_REMOTE_BRANCH_ICON')${${remote// /}//\%/%%}"
   fi
 }
 
@@ -3895,14 +3972,16 @@ function +vi-git-tagname() {
         # string.
         local revision
         revision="$(git rev-list -n 1 --abbrev-commit --abbrev=${_POWERLEVEL9K_CHANGESET_HASH_LENGTH} HEAD)"
+        hook_com[p9k-escaped]=1
         if (( _POWERLEVEL9K_HIDE_BRANCH_ICON )); then
-          hook_com[branch]="${revision} $(print_icon 'VCS_TAG_ICON')${tag}"
+          hook_com[branch]="${revision} $(print_icon 'VCS_TAG_ICON')${tag//\%/%%}"
         else
-          hook_com[branch]="$(print_icon 'VCS_BRANCH_ICON')${revision} $(print_icon 'VCS_TAG_ICON')${tag}"
+          hook_com[branch]="$(print_icon 'VCS_BRANCH_ICON')${revision} $(print_icon 'VCS_TAG_ICON')${tag//\%/%%}"
         fi
       else
         # We are on both a tag and a branch; print both by appending the tag name.
-        hook_com[branch]+=" $(print_icon 'VCS_TAG_ICON')${tag}"
+        _p9k_vcs_info_escape_branch
+        hook_com[branch]+=" $(print_icon 'VCS_TAG_ICON')${tag//\%/%%}"
       fi
     fi
   fi
@@ -3911,15 +3990,23 @@ function +vi-git-tagname() {
 # Show count of stashed changes
 # Port from https://github.com/whiteinge/dotfiles/blob/5dfd08d30f7f2749cfc60bc55564c6ea239624d9/.zsh_shouse_prompt#L268
 function +vi-git-stash() {
-  if [[ -s "${vcs_comm[gitdir]}/logs/refs/stash" ]] ; then
-    local -a stashes=( "${(@f)"$(<${vcs_comm[gitdir]}/logs/refs/stash)"}" )
+  local gitdir=${vcs_comm[gitdir]}
+  # In a linked worktree refs/stash lives in the common dir.
+  if [[ -f $gitdir/commondir ]]; then
+    local common="$(<$gitdir/commondir)"
+    if [[ -n $common ]]; then
+      [[ $common == /* ]] && gitdir=$common || gitdir=$gitdir/$common
+    fi
+  fi
+  if [[ -s "$gitdir/logs/refs/stash" ]] ; then
+    local -a stashes=( "${(@f)"$(<$gitdir/logs/refs/stash)"}" )
     hook_com[misc]+=" $(print_icon 'VCS_STASH_ICON')${#stashes}"
   fi
 }
 
 function +vi-hg-bookmarks() {
   if [[ -n "${hgbmarks[@]}" ]]; then
-    hook_com[hg-bookmark-string]=" $(print_icon 'VCS_BOOKMARK_ICON')${hgbmarks[@]}"
+    hook_com[hg-bookmark-string]=" $(print_icon 'VCS_BOOKMARK_ICON')${${hgbmarks[@]}//\%/%%}"
 
     # To signal that we want to use the string we just generated, set the special
     # variable `ret' to something other than the default zero:
@@ -3947,16 +4034,16 @@ function +vi-vcs-detect-changes() {
 }
 
 function +vi-svn-detect-changes() {
-  local svn_status="$(svn status)"
-  if [[ -n "$(echo "$svn_status" | \grep \^\?)" ]]; then
+  local svn_status=$'\n'"$(svn status)"
+  if [[ $svn_status == *$'\n?'* ]]; then
     hook_com[unstaged]+=" $(print_icon 'VCS_UNTRACKED_ICON')"
     VCS_WORKDIR_HALF_DIRTY=true
   fi
-  if [[ -n "$(echo "$svn_status" | \grep \^\M)" ]]; then
+  if [[ $svn_status == *$'\nM'* ]]; then
     hook_com[unstaged]+=" $(print_icon 'VCS_UNSTAGED_ICON')"
     VCS_WORKDIR_DIRTY=true
   fi
-  if [[ -n "$(echo "$svn_status" | \grep \^\A)" ]]; then
+  if [[ $svn_status == *$'\nA'* ]]; then
     hook_com[staged]+=" $(print_icon 'VCS_STAGED_ICON')"
     VCS_WORKDIR_DIRTY=true
   fi
@@ -3979,9 +4066,11 @@ _p9k_vcs_info_init() {
   zstyle ':vcs_info:*' stagedstr " $_p9k__ret"
   _p9k_get_icon '' VCS_UNSTAGED_ICON
   zstyle ':vcs_info:*' unstagedstr " $_p9k__ret"
-  zstyle ':vcs_info:git*+set-message:*' hooks $_POWERLEVEL9K_VCS_GIT_HOOKS
-  zstyle ':vcs_info:hg*+set-message:*' hooks $_POWERLEVEL9K_VCS_HG_HOOKS
-  zstyle ':vcs_info:svn*+set-message:*' hooks $_POWERLEVEL9K_VCS_SVN_HOOKS
+  zstyle ':vcs_info:git*+set-message:*' hooks $_POWERLEVEL9K_VCS_GIT_HOOKS p9k-escape
+  zstyle ':vcs_info:hg*+set-message:*' hooks $_POWERLEVEL9K_VCS_HG_HOOKS p9k-escape
+  zstyle ':vcs_info:svn*+set-message:*' hooks $_POWERLEVEL9K_VCS_SVN_HOOKS p9k-escape
+  zstyle ':vcs_info:hg*+set-branch-format:*' hooks p9k-escape-branch-format
+  zstyle ':vcs_info:svn*+set-branch-format:*' hooks p9k-escape-branch-format
 
   # For Hg, only show the branch name
   if (( _POWERLEVEL9K_HIDE_BRANCH_ICON )); then
@@ -3995,10 +4084,15 @@ _p9k_vcs_info_init() {
   zstyle ':vcs_info:hg*:*' get-bookmarks true
   zstyle ':vcs_info:hg*+gen-hg-bookmark-string:*' hooks hg-bookmarks
 
-  # TODO: fix the %b (branch) format for svn. Using %b breaks color-encoding of the foreground
-  # for the rest of the powerline.
-  zstyle ':vcs_info:svn*:*' formats "$prefix%c%u"
-  zstyle ':vcs_info:svn*:*' actionformats "$prefix%c%u %F{$_POWERLEVEL9K_VCS_ACTIONFORMAT_FOREGROUND}| %a%f"
+  # For SVN, show the branch name; the revision comes from SHOW_CHANGESET like for the others.
+  if (( _POWERLEVEL9K_HIDE_BRANCH_ICON )); then
+    zstyle ':vcs_info:svn*:*' branchformat "%b"
+  else
+    _p9k_get_icon '' VCS_BRANCH_ICON
+    zstyle ':vcs_info:svn*:*' branchformat "$_p9k__ret%b"
+  fi
+  zstyle ':vcs_info:svn*:*' formats "$prefix%b%c%u"
+  zstyle ':vcs_info:svn*:*' actionformats "$prefix%b%c%u %F{$_POWERLEVEL9K_VCS_ACTIONFORMAT_FOREGROUND}| %a%f"
 
   if (( _POWERLEVEL9K_SHOW_CHANGESET )); then
     zstyle ':vcs_info:*' get-revision true
