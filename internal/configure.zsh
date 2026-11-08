@@ -39,7 +39,7 @@ function _p9k_can_configure() {
       return 1
     }
     [[ ! -e $__p9k_zshrc || -f $__p9k_zshrc || -h $__p9k_zshrc ]]          || {
-      $0_error "$__p9k_zshrc_u a special file"
+      $0_error "$__p9k_zshrc_u is a special file"
       return 1
     }
     [[ ! -e $__p9k_zshrc || -r $__p9k_zshrc ]]                             || {
@@ -78,7 +78,6 @@ function p9k_configure() {
   local ret=$?
   case $ret in
     0)  builtin source $__p9k_cfg_path; _p9k__force_must_init=1;;
-    69) return 0;;
     *)  return $ret;;
   esac
 }

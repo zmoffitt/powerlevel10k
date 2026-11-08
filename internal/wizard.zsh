@@ -46,7 +46,18 @@ local -r vertical_bar='\u2502'
 local -r cursor='%1{\e[07m \e[27m%}'
 
 local -r time_24h='16:23:42'
-local -r time_12h='04:23:42 PM'
+local time_12h='04:23:42 PM'
+# %p in the generated TIME_FORMAT follows LC_TIME (it can be empty or non-English), so preview
+# the afternoon marker of the user's locale.
+() {
+  zmodload zsh/datetime 2>/dev/null || return
+  local h pm
+  strftime -s h '%H' $EPOCHSECONDS 2>/dev/null || return
+  [[ $h == <0-23> ]] || return
+  strftime -s pm '%p' $((EPOCHSECONDS + (16 - ${h#0}) * 3600)) 2>/dev/null || return
+  time_12h="04:23:42${pm:+ ${pm//\%/%%}}"
+}
+typeset -r time_12h
 
 local -ra lean_left=(
   '%$frame_color[$color]F╭─ ' '${extra_icons[1]:+%f$extra_icons[1] }%31F$extra_icons[2]%B%39F~%b%31F/%B%39Fsrc%b%f $prefixes[1]%76F$extra_icons[3]master%f '
@@ -223,7 +234,7 @@ function hide_cursor() {
 
 function show_cursor() {
   local cnorm=${terminfo[cnorm]-}
-  if [[ $cnorm == *$'\e[?25h'(|'\e'*) ]]; then
+  if [[ $cnorm == *$'\e[?25h'(|$'\e'*) ]]; then
     print -n '\e[?25h'
   else
     print -n $cnorm
@@ -465,7 +476,7 @@ local terminal iterm2_font_size iterm2_old_font=0 can_install_font=0
       [[ -w ~/.termux/font.ttf ]] || return
       ! grep -q 'MesloLGS NF' ~/.termux/font.ttf 2>/dev/null || return
     fi
-    if [[ -f ~/.termux ]]; then
+    if [[ -e ~/.termux ]]; then
       [[ -d ~/.termux && -w ~/.termux ]] || return
     else
       [[ -w ~ ]] || return
@@ -476,7 +487,7 @@ local terminal iterm2_font_size iterm2_old_font=0 can_install_font=0
   if [[ "$(uname)" == Darwin && $TERM_PROGRAM == iTerm.app ]]; then
     (( $+commands[curl] )) || return
     [[ $TERM_PROGRAM_VERSION == [2-9]* ]] || return
-    if [[ -f ~/Library/Fonts ]]; then
+    if [[ -e ~/Library/Fonts ]]; then
       [[ -d ~/Library/Fonts && -w ~/Library/Fonts ]] || return
     else
       [[ -d ~/Library && -w ~/Library ]] || return
@@ -525,7 +536,8 @@ function install_font() {
     Termux)
       command mkdir -p -- ~/.termux || quit -c
       run_command "Downloading %BMesloLGS NF Regular.ttf%b" \
-        curl -fsSL -o ~/.termux/font.ttf "$font_base_url/MesloLGS%20NF%20Regular.ttf"
+        curl -fsSL -o ~/.termux/font.ttf.tmp "$font_base_url/MesloLGS%20NF%20Regular.ttf"
+      command mv -f -- ~/.termux/font.ttf{.tmp,} || quit -c
       run_command "Reloading %BTermux%b settings" termux-reload-settings
     ;;
     iTerm2)
@@ -638,9 +650,14 @@ function ask_remove_font() {
   local font
   local -a fonts
   local -i protected
-  for font in {,/System,~}/Library/Fonts/**/*[Mm]eslo*.(ttf|otf)(N:A); do
-    [[ -f $font && -r $font ]] || continue
+  local home_fonts=~/Library/Fonts
+  home_fonts=${home_fonts:A}
+  for font in {,/System,~}/Library/Fonts/**/*[Mm]eslo*.(ttf|otf)(N); do
+    # Skip the fonts installed by install_font both before and after resolving symlinks.
     [[ $font == ~/Library/Fonts/'MesloLGS NF '(Regular|Bold|Italic|Bold\ Italic).ttf ]] && continue
+    font=${font:A}
+    [[ $font == $home_fonts/'MesloLGS NF '(Regular|Bold|Italic|Bold\ Italic).ttf ]] && continue
+    [[ -f $font && -r $font ]] || continue
     [[ "$(<$font)" == *"MesloLGS NF"$'\0'* ]] || continue
     fonts+=$font
     [[ -w ${font:h} ]] || protected=1
@@ -664,6 +681,10 @@ function ask_remove_font() {
     for pass render in "${(@)screen_widgets}"; do
       (( pass == 0 )) && eval $render
     done
+    # exit skips the enclosing always block, so restore the terminal like quit does.
+    consume_input
+    stty echo 2>/dev/null
+    show_cursor
     exit 1
   fi
   if (( $#fonts == 1 )); then
@@ -1155,7 +1176,6 @@ function os_icon_name() {
               echo LINUX_DEBIAN_ICON
             fi
           ;;
-          *raspbian*)              echo LINUX_RASPBIAN_ICON;;
           *ubuntu*)                echo LINUX_UBUNTU_ICON;;
           *elementary*)            echo LINUX_ELEMENTARY_ICON;;
           *fedora*)                echo LINUX_FEDORA_ICON;;
@@ -1609,6 +1629,7 @@ function ask_transient_prompt() {
 function ask_config_overwrite() {
   config_backup=
   config_backup_u=0
+  overwrite_config=0
   if [[ ! -e $__p9k_cfg_path ]]; then
     return 0
   fi
@@ -1621,23 +1642,55 @@ function ask_config_overwrite() {
   ask yr
   case $choice in
     r) return 1;;
-    y)
-      if [[ -n "$TMPDIR" && ( ( -d "$TMPDIR" && -w "$TMPDIR" ) || ! ( -d /tmp && -w /tmp ) ) ]]; then
-        local tmpdir=$TMPDIR
-        local tmpdir_u='$TMPDIR'
-      else
-        local tmpdir=/tmp
-        local tmpdir_u=/tmp
-      fi
-      if (( ! $+commands[mktemp] )) ||
-         ! config_backup=$(mktemp $tmpdir/$__p9k_cfg_basename.XXXXXXXXXX 2>/dev/null); then
-        create_tmp_file config_backup $tmpdir/$__p9k_cfg_basename || quit -c
-      fi
-      cp $__p9k_cfg_path $config_backup || quit -c
-      config_backup_u=$tmpdir_u/${(q-)config_backup:t}
-    ;;
+    y) overwrite_config=1;;
   esac
   return 0
+}
+
+# Usage: pick_tmpdir
+#
+# Sets tmpdir and tmpdir_u (the latter for display) in the caller's scope.
+function pick_tmpdir() {
+  if [[ -n "$TMPDIR" && ( ( -d "$TMPDIR" && -w "$TMPDIR" ) || ! ( -d /tmp && -w /tmp ) ) ]]; then
+    tmpdir=$TMPDIR
+    tmpdir_u='$TMPDIR'
+  else
+    tmpdir=/tmp
+    tmpdir_u=/tmp
+  fi
+}
+
+# Backups are made only after the last question has been answered, so that restarting or
+# quitting the wizard does not leave copies of the config and ~/.zshrc in the temp directory.
+function backup_config() {
+  local tmpdir tmpdir_u
+  pick_tmpdir
+  if (( ! $+commands[mktemp] )) ||
+     ! config_backup=$(mktemp $tmpdir/$__p9k_cfg_basename.XXXXXXXXXX 2>/dev/null); then
+    create_tmp_file config_backup $tmpdir/$__p9k_cfg_basename || quit -c
+  fi
+  cp $__p9k_cfg_path $config_backup || quit -c
+  config_backup_u=$tmpdir_u/${${(q-)config_backup:t}//\%/%%}
+}
+
+function backup_zshrc() {
+  local tmpdir tmpdir_u
+  pick_tmpdir
+  if (( ! $+commands[mktemp] )) ||
+     ! zshrc_backup="$(mktemp $tmpdir/.zshrc.XXXXXXXXXX 2>/dev/null)"; then
+    create_tmp_file zshrc_backup $tmpdir/.zshrc || quit -c
+  fi
+  # No -p: the backup lives in a shared temporary directory and must keep the 0600 mode
+  # it was created with rather than take the mode of ~/.zshrc.
+  cp -- $__p9k_zshrc $zshrc_backup                   || quit -c
+  local -i writable=1
+  if [[ ! -w $zshrc_backup ]]; then
+    chmod u+w -- $zshrc_backup                       || quit -c
+    writable=0
+  fi
+  print -r -- $zshrc_content >$zshrc_backup          || quit -c
+  (( writable )) || chmod u-w -- $zshrc_backup       || quit -c
+  zshrc_backup_u=$tmpdir_u/${(q-)zshrc_backup:t}
 }
 
 function ask_zshrc_edit() {
@@ -1666,6 +1719,12 @@ function ask_zshrc_edit() {
     modifiable=
     add_widget 0 flowing -c %3FWARNING:%f %2F${__p9k_zd_u//\\/\\\\}%f %3Fis readonly.%f
     add_widget 0 print -P ""
+  elif [[ ! -w ${__p9k_zshrc:h} ]]; then
+    # ~/.zshrc is a symlink into a directory where change_zshrc cannot create its temp file.
+    modifiable=
+    local dir_u=${${${(q)${__p9k_zshrc:h}}/#(#b)${(q)HOME}(|\/*)/'~'$match[1]}//\%/%%}
+    add_widget 0 flowing -c %3FWARNING:%f %2F${dir_u//\\/\\\\}%f %3Fis readonly.%f
+    add_widget 0 print -P ""
   elif [[ -e $__p9k_zshrc && ! -w $__p9k_zshrc ]]; then
     local -a stat
     zstat -A stat +uid -- $__p9k_zshrc || quit -c
@@ -1692,33 +1751,7 @@ function ask_zshrc_edit() {
   case $choice in
     r) return 1;;
     n) return 0;;
-    y)
-      write_zshrc=1
-      if [[ -n $zshrc_content ]]; then
-        if [[ -n "$TMPDIR" && ( ( -d "$TMPDIR" && -w "$TMPDIR" ) || ! ( -d /tmp && -w /tmp ) ) ]]; then
-          local tmpdir=$TMPDIR
-          local tmpdir_u='$TMPDIR'
-        else
-          local tmpdir=/tmp
-          local tmpdir_u=/tmp
-        fi
-        if (( ! $+commands[mktemp] )) ||
-           ! zshrc_backup="$(mktemp $tmpdir/.zshrc.XXXXXXXXXX 2>/dev/null)"; then
-          create_tmp_file zshrc_backup $tmpdir/.zshrc || quit -c
-        fi
-        # No -p: the backup lives in a shared temporary directory and must keep the 0600 mode
-        # it was created with rather than take the mode of ~/.zshrc.
-        cp -- $__p9k_zshrc $zshrc_backup                   || quit -c
-        local -i writable=1
-        if [[ ! -w $zshrc_backup ]]; then
-          chmod u+w -- $zshrc_backup                       || quit -c
-          writable=0
-        fi
-        print -r -- $zshrc_content >$zshrc_backup          || quit -c
-        (( writable )) || chmod u-w -- $zshrc_backup       || quit -c
-        zshrc_backup_u=$tmpdir_u/${(q-)zshrc_backup:t}
-      fi
-    ;;
+    y) write_zshrc=1;;
   esac
   return 0
 }
@@ -1769,8 +1802,8 @@ function generate_config() {
       sub YAZI_VISUAL_IDENTIFIER_EXPANSION "'▲'"
       uncomment 'typeset -g POWERLEVEL9K_KUBECONTEXT_DEFAULT_VISUAL_IDENTIFIER_EXPANSION'
       sub KUBECONTEXT_DEFAULT_VISUAL_IDENTIFIER_EXPANSION "'○'"
-      uncomment 'typeset -g POWERLEVEL9K_AZURE_VISUAL_IDENTIFIER_EXPANSION'
-      sub AZURE_VISUAL_IDENTIFIER_EXPANSION "'az'"
+      uncomment 'typeset -g POWERLEVEL9K_AZURE_OTHER_VISUAL_IDENTIFIER_EXPANSION'
+      sub AZURE_OTHER_VISUAL_IDENTIFIER_EXPANSION "'az'"
       uncomment 'typeset -g POWERLEVEL9K_AWS_EB_ENV_VISUAL_IDENTIFIER_EXPANSION'
       sub AWS_EB_ENV_VISUAL_IDENTIFIER_EXPANSION "'eb'"
       uncomment 'typeset -g POWERLEVEL9K_BACKGROUND_JOBS_VISUAL_IDENTIFIER_EXPANSION'
@@ -1781,11 +1814,9 @@ function generate_config() {
       uncomment 'typeset -g POWERLEVEL9K_VIRTUALENV_VISUAL_IDENTIFIER_EXPANSION'
       uncomment 'typeset -g POWERLEVEL9K_ANACONDA_VISUAL_IDENTIFIER_EXPANSION'
       uncomment 'typeset -g POWERLEVEL9K_PYENV_VISUAL_IDENTIFIER_EXPANSION'
-      uncomment 'typeset -g POWERLEVEL9K_PYTHON_ICON'
       sub VIRTUALENV_VISUAL_IDENTIFIER_EXPANSION "'🐍'"
       sub ANACONDA_VISUAL_IDENTIFIER_EXPANSION "'🐍'"
       sub PYENV_VISUAL_IDENTIFIER_EXPANSION "'🐍'"
-      sub PYTHON_ICON "'🐍'"
     fi
 
     case $POWERLEVEL9K_MODE in
@@ -1802,13 +1833,11 @@ function generate_config() {
         sub BACKGROUND $bg_color[$color]
         sub LEFT_SUBSEGMENT_SEPARATOR "'%$sep_color[$color]F$left_subsep'"
         sub RIGHT_SUBSEGMENT_SEPARATOR "'%$sep_color[$color]F$right_subsep'"
-        sub VCS_LOADING_FOREGROUND $sep_color[$color]
         rep '%248F' "%$prefix_color[$color]F"
       else
         sub LEFT_SUBSEGMENT_SEPARATOR "'$left_subsep'"
         sub RIGHT_SUBSEGMENT_SEPARATOR "'$right_subsep'"
       fi
-      sub RULER_FOREGROUND $frame_color[$color]
       sub MULTILINE_FIRST_PROMPT_GAP_FOREGROUND $frame_color[$color]
       sub MULTILINE_FIRST_PROMPT_PREFIX "'%$frame_color[$color]F╭─'"
       sub MULTILINE_NEWLINE_PROMPT_PREFIX "'%$frame_color[$color]F├─'"
@@ -1984,8 +2013,17 @@ function change_zshrc() {
   (( write_zshrc )) || return 0
 
   local tmp=$__p9k_zshrc.${(%):-%n}.tmp.$$
-  # Some filesystems cannot preserve permissions; fall back to a plain copy.
-  [[ ! -e $__p9k_zshrc ]] || cp -p $__p9k_zshrc $tmp 2>/dev/null || cp $__p9k_zshrc $tmp || return
+  # Some filesystems cannot preserve permissions; fall back to a plain copy and copy the mode
+  # explicitly so that a private ~/.zshrc does not become world-readable.
+  if [[ -e $__p9k_zshrc ]] && ! cp -p $__p9k_zshrc $tmp 2>/dev/null; then
+    cp $__p9k_zshrc $tmp || return
+    local -a zshrc_mode
+    if ! zstat -A zshrc_mode +mode -- $__p9k_zshrc ||
+       ! chmod -- $(( [##8] zshrc_mode[1] & 8#7777 )) $tmp; then
+      zf_rm -f -- $tmp
+      return 1
+    fi
+  fi
 
   {
     local -i writable=1
@@ -2053,11 +2091,11 @@ function check_zshrc_integration() {
   local h9='"$ZDOTDIR"/.p10k.zsh'
   local h10='$POWERLEVEL9K_CONFIG_FILE'
   local h11='"$POWERLEVEL9K_CONFIG_FILE"'
-  if [[ -n ${(@M)lines:#(#b)[^#]#([^[:IDENT:]]|)source[[:space:]]##(|--[[:space:]]##)($f1|$f2|$f3|$f4|$g1|$h0|$h1|$h2|$h3|$h4|$h5|$h6|$h7|$h8|$h9|$h10|$h11)(|[[:space:]]*|'#'*)} ]]; then
+  if [[ -n ${(@M)lines:#(#b)[^#]#([^#[:IDENT:]]|)source[[:space:]]##(|--[[:space:]]##)($f1|$f2|$f3|$f4|$g1|$h0|$h1|$h2|$h3|$h4|$h5|$h6|$h7|$h8|$h9|$h10|$h11)(|[[:space:]]*|'#'*)} ]]; then
     zshrc_has_cfg=1
   fi
   local pre='${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh'
-  if [[ -n ${(@M)lines:#(#b)[^#]#([^[:IDENT:]]|)source[[:space:]]##($pre|\"$pre\")(|[[:space:]]*|'#'*)} ]]; then
+  if [[ -n ${(@M)lines:#(#b)[^#]#([^#[:IDENT:]]|)source[[:space:]]##($pre|\"$pre\")(|[[:space:]]*|'#'*)} ]]; then
     zshrc_has_instant_prompt=1
   fi
   return 0
@@ -2118,6 +2156,7 @@ while true; do
   local instant_prompt=verbose zshrc_content= zshrc_backup= zshrc_backup_u=
   local -i zshrc_has_cfg=0 zshrc_has_instant_prompt=0 write_zshrc=0
   local POWERLEVEL9K_MODE= POWERLEVEL9K_ICON_PADDING=moderate style= config_backup= config_backup_u=
+  local -i overwrite_config=0
   local gap_char=' ' prompt_char='❯' down_triangle='\uE0BC' up_triangle='\uE0BA' slanted_bar='\u2571'
   local left_subsep= right_subsep= left_tail= right_tail= left_head= right_head= time=
   local -i num_lines=2 empty_line=0 color=2 left_frame=1 right_frame=1 transient_prompt=0
@@ -2242,6 +2281,9 @@ while true; do
   break
 done
 
+(( overwrite_config )) && backup_config
+(( write_zshrc )) && [[ -n $zshrc_content ]] && backup_zshrc
+
 restore_screen
 
 if (( !in_z4h_wizard )); then
@@ -2257,7 +2299,16 @@ if (( !in_z4h_wizard )); then
 fi
 
 generate_config || return
-change_zshrc    || return
+if ! change_zshrc; then
+  # The new config is already in place, so "wizard has been aborted" from quit would mislead.
+  print -rP ""
+  flowing +c %1FERROR:%f failed to modify "%B${__p9k_zshrc_u//\\/\\\\}%b." The new config has \
+    been written to "%B${__p9k_cfg_path_u//\\/\\\\}%b" but "%B${__p9k_zshrc_u//\\/\\\\}%b" \
+    has not been changed.
+  print -rP ""
+  success=1
+  return 1
+fi
 
 if (( !in_z4h_wizard )); then
   print -rP ""
