@@ -157,7 +157,13 @@ function gitstatus_query"${1:-}"() {
       +p) no_diff=0;;
       p)  no_diff=1;;
       d)  dir=$OPTARG;;
-      c)  callback=$OPTARG;;
+      c)
+        if [[ $OPTARG == *[$'\x1e\x1f']* ]]; then
+          print -ru2 -- "gitstatus_query: invalid -c argument: ${(V)OPTARG}"
+          return 1
+        fi
+        callback=$OPTARG
+      ;;
       t)
         if [[ $OPTARG != (|+|-)<->(|.<->)(|[eE](|-|+)<->) ]]; then
           print -ru2 -- "gitstatus_query: invalid -t argument: $OPTARG"
@@ -202,7 +208,9 @@ function gitstatus_query"${1:-}"() {
     fi
   fi
 
-  if [[ $dir != (|:)/* ]]; then
+  # 0x1E and 0x1F are gitstatusd protocol separators. Letting them through would allow a crafted
+  # directory name to inject requests whose ids get evaluated as callbacks.
+  if [[ $dir != (|:)/* || $dir == *[$'\x1e\x1f']* ]]; then
     typeset -g VCS_STATUS_RESULT=norepo-sync
     _gitstatus_clear$fsuf
     return 0
@@ -559,7 +567,7 @@ function gitstatus_start"${1:-}"() {
     return 1
   fi
 
-  local -i lock_fd resp_fd stderr_fd
+  local -i lock_fd resp_fd stderr_fd req_fd
   local file_prefix xtrace=/dev/null daemon_log=/dev/null culprit
 
   {
