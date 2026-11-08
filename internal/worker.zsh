@@ -1,16 +1,15 @@
 # invoked in worker: _p9k_worker_main <pgid>
 function _p9k_worker_main() {
-  mkfifo -m 600 -- $_p9k__worker_file_prefix.fifo || return
-  echo -nE - s$_p9k_worker_pgid$'\x1e'     || return
-  exec <$_p9k__worker_file_prefix.fifo     || return
-  zf_rm -- $_p9k__worker_file_prefix.fifo  || return
-
-  local -i reset
+  local -i reset poll
+  local -F t
   local req fd
   local -a ready
   local _p9k_worker_request_id
   local -A _p9k_worker_fds       # fd => id$'\x1f'callback
+  local -A _p9k_worker_jobs      # fd => start-time$'\x1f'pid
   local -A _p9k_worker_inflight  # id => inflight count
+  # Async jobs running longer than this are presumed hung. The realtime time job sleeps for up to one interval.
+  local -i _p9k_worker_timeout=$(( 60 + ${_POWERLEVEL9K_EXPERIMENTAL_TIME_REALTIME_INTERVAL_SEC:-0} ))
 
   function _p9k_worker_reply() {
     print -nr -- e${(pj:\n:)@}$'\x1e' || kill -- -$_p9k_worker_pgid
@@ -19,15 +18,46 @@ function _p9k_worker_main() {
   # usage: _p9k_worker_async <work> <callback>
   function _p9k_worker_async() {
     local fd async=$1
-    sysopen -r -o cloexec -u fd <(() { eval $async; } && print -n '\x1e') || return
+    sysopen -r -o cloexec -u fd <(() { eval $async; } </dev/null && print -n '\x1e') || return
     (( ++_p9k_worker_inflight[$_p9k_worker_request_id] ))
     _p9k_worker_fds[$fd]=$_p9k_worker_request_id$'\x1f'$2
+    _p9k_worker_jobs[$fd]=$EPOCHSECONDS$'\x1f'$sysparams[procsubstpid]
   }
 
   trap '' PIPE
 
   {
-    while zselect -a ready 0 ${(k)_p9k_worker_fds}; do
+    command mkfifo -m 600 -- $_p9k__worker_file_prefix.fifo || return
+    echo -nE - s$_p9k_worker_pgid$'\x1e'             || return
+    exec <$_p9k__worker_file_prefix.fifo             || return
+    zf_rm -- $_p9k__worker_file_prefix.fifo          || return
+
+    while true; do
+      for fd in ${(k)_p9k_worker_jobs}; do
+        (( EPOCHSECONDS - ${_p9k_worker_jobs[$fd]%%$'\x1f'*} >= _p9k_worker_timeout )) || continue
+        kill -- ${_p9k_worker_jobs[$fd]#*$'\x1f'} 2>/dev/null
+        _p9k_worker_request_id=${_p9k_worker_fds[$fd]%%$'\x1f'*}
+        unset "_p9k_worker_fds[$fd]" "_p9k_worker_jobs[$fd]"
+        exec {fd}>&-
+        poll=1
+        if (( --_p9k_worker_inflight[$_p9k_worker_request_id] == 0 )); then
+          unset "_p9k_worker_inflight[$_p9k_worker_request_id]"
+          print -rn -- d$_p9k_worker_request_id$'\x1e' || return
+        fi
+      done
+      if (( poll || $#_p9k_worker_fds )); then
+        # Wake up periodically while jobs are running to enforce the timeout, and once more after
+        # a job finishes: zsh reaps exited children only after zselect returns.
+        poll=0
+        t=$EPOCHREALTIME
+        zselect -t 100 -a ready 0 ${(k)_p9k_worker_fds} || {
+          # Status 1 means timeout or error. Only a timeout takes this long.
+          (( $? == 1 && EPOCHREALTIME - t >= 0.5 )) || return
+          continue
+        }
+      else
+        zselect -a ready 0 || return
+      fi
       [[ $ready[1] == -r ]] || return
       for fd in ${ready:1}; do
         if [[ $fd == 0 ]]; then
@@ -58,8 +88,9 @@ function _p9k_worker_main() {
           done
           local cb=$_p9k_worker_fds[$fd]
           _p9k_worker_request_id=${cb%%$'\x1f'*}
-          unset "_p9k_worker_fds[$fd]"
+          unset "_p9k_worker_fds[$fd]" "_p9k_worker_jobs[$fd]"
           exec {fd}>&-
+          poll=1
           if [[ $REPLY == *$'\x1e' ]]; then
             REPLY[-1]=""
             () { eval $cb[$#_p9k_worker_request_id+2,-1] }
@@ -182,10 +213,11 @@ function _p9k_worker_start() {
   {
     [[ -n $_p9k__worker_resp_fd ]] && return
 
-    if [[ -n "$TMPDIR" && ( ( -d "$TMPDIR" && -w "$TMPDIR" ) || ! ( -d /tmp && -w /tmp ) ) ]]; then
-      local tmpdir=$TMPDIR
-    else
-      local tmpdir=/tmp
+    # The worker runs in /, so a relative TMPDIR must be made absolute.
+    local tmpdir=$TMPDIR
+    [[ $tmpdir == /* ]] || tmpdir=${tmpdir:a}
+    if [[ -z $TMPDIR || ( ! ( -d $tmpdir && -w $tmpdir ) && -d /tmp && -w /tmp ) ]]; then
+      tmpdir=/tmp
     fi
     _p9k__worker_file_prefix=$tmpdir/p10k.worker.$EUID.$sysparams[pid].$EPOCHSECONDS.$RANDOM$RANDOM
 
