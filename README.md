@@ -29,23 +29,65 @@ is a drop-in replacement for upstream Powerlevel10k: the configuration format, t
 `~/.p10k.zsh` are unchanged. Install it with any of the git-based
 [installation methods](#installation) below.
 
-Changes relative to upstream:
+Changes relative to upstream (bug fixes only; no new features). The complete list with the
+reasoning behind each fix is in the commit history and in [review-findings.md](review-findings.md).
 
-- `aws`: do not attribute the region of unrelated sections in `~/.aws/config` to a profile.
-- `dotnet_version`: fix the name of the segment init function.
-- `node_version`: depend on the `.node-version` file that was actually found.
-- `nvm`: do not use `path` as a loop variable in `_p9k_nvm_ls_default`.
-- `package`: accept negative numbers and exponents in `package.json`.
-- `vcs`: fix clamping of `POWERLEVEL9K_VCS_MAX_SYNC_LATENCY_SECONDS`.
-- Fix missing `$` in `[[ _p9k__ret == *%* ]]` checks.
-- Remove duplicate `_p9k_phpenv_global_version`; fix `_p9__ip_timestamp` typo.
+- **Security.** The gitstatusd installer verifies TLS certificates, requires a matching SHA-256
+  digest, and reuses a cached binary only when neither it nor its directory is writable by others.
+  Temporary files get unpredictable names and are created exclusively without following symlinks.
+  The state cache and the instant prompt file are sourced only when they, their directory and any
+  `.zwc` next to them belong to the user. Text that comes from repositories, environment variables
+  or command output is escaped before it reaches the prompt (version files, branch and tag names,
+  `.terraform/environment`, `package.json`, cloud and Kubernetes contexts, and more).
+  `gitstatus_query` rejects directory names containing the bytes gitstatusd uses as record and
+  field separators, which could otherwise inject requests whose replies were evaluated as shell
+  code. `laravel_version`, `rust_version`, `dotnet_version` and `go_version` no longer run code
+  selected by an untrusted checkout, and reads of files named by a repository stop at FIFOs and
+  devices.
+- **Instant prompt and caches.** `POWERLEVEL9K_INSTANT_PROMPT=off` is honored when the cached state
+  is restored. The dump no longer forks or redraws the raw prompt template, terminfo padding is
+  stripped, cache signatures include the inputs they depend on (terminal program version, OS type,
+  `CODEPOINT_OF_*`, `P9K_SSH`), temporary files are cleaned up on every exit path, and caches
+  built by older code are regenerated.
+- **Prompt rendering.** Fixes for the transient prompt with `)` in `PROMPT_CHAR_*_CONTENT_EXPANSION`,
+  for `SH_GLOB`, `KSH_ARRAYS`, `GLOB_SUBST`, `IGNORE_BRACES` and `IGNORE_CLOSE_BRACES`, for the
+  `truncate_absolute`, `truncate_to_unique` and `truncate_with_package_name` directory strategies,
+  for prompts with four or more lines, for gap and ruler characters that are special in prompt
+  expansion, for the vcs line index with empty prompt lines, and for `SHOW_ON_COMMAND` with segment
+  names that end in a digit, underscore or capital letter or contain a hyphen, as well as during
+  menu completion. The command parser behind `SHOW_ON_COMMAND` understands here-documents,
+  `doas`, `env`, `sudo -D`/`-R`, `repeat`, `case` patterns with a leading parenthesis, commands
+  given as `$VAR` and command substitutions inside assignments.
+- **Segments.** battery (sysfs file selection, discharge sign), ip/vpn_ip (per-address rows,
+  `@peer` suffixes, counter resets, ifconfig fallback), disk_usage, detect_virt, taskwarrior,
+  timewarrior, terraform and terraform_version, asdf (`ASDF_DEFAULT_TOOL_VERSIONS_FILENAME`),
+  haskell_stack (asynchronous), wifi (macOS 14.4+ and Linux signal bars), cpu_arch, kubecontext
+  (GKE regions), gcloud (`CLOUDSDK_ACTIVE_CONFIG_NAME`), aws and aws_eb_env (asynchronous), status
+  (exit codes above 255), command_execution_time rounding, nvm, nodenv, pyenv and goenv (CRLF
+  version files), rbenv and the other `*env` segments, svn and hg through vcs_info, package,
+  `*_SHOW_ON_UPGLOB` caching, custom segments, the user segment's template, the BSD ram segment,
+  and the human-readable byte formatter under non-English locales.
+- **Async worker.** Setup failures are cleaned up, hung jobs time out instead of freezing their
+  segment, defunct children are reaped, and a relative `TMPDIR` works.
+- **Configuration wizard.** Font detection and installation, backups and `.zshrc` edits on
+  filesystems that cannot preserve permissions, terminal state restoration on every exit path,
+  and several template substitutions that silently did nothing.
+- **Config templates and documentation.** Parameter names that the code never read, 256-color
+  values in the 8-color template, examples that broke when uncommented, stale statements and
+  broken anchors in this README, and the disabled `nordvpn` segment is marked as such.
+- **gitstatus.** The bash plugin no longer kills the shell with SIGPIPE when gitstatusd dies and
+  gets the same separator check as the zsh plugin; the installer, build script and gitstatusd
+  sources received portability and correctness fixes (the shipped binaries are still built upstream).
 
 Distribution packages ([Homebrew](#homebrew), [Arch Linux](#arch-linux),
 [Alpine Linux](#alpine-linux)), [Prezto](#prezto) and [Fig](#fig) install upstream Powerlevel10k,
 not this fork.
 
 The [gitstatus](gitstatus) directory is a subtree of
-[romkatv/gitstatus](https://github.com/romkatv/gitstatus) and is kept unmodified. Screenshots and
+[romkatv/gitstatus](https://github.com/romkatv/gitstatus) and carries a few fork-specific fixes
+(stricter verification of downloaded and cached gitstatusd binaries, fd handling in
+`gitstatus_stop`, small source fixes); do not re-sync it from upstream without reapplying them.
+Screenshots and
 the [recommended font](#meslo-nerd-font-patched-for-powerlevel10k) are served from upstream's
 [powerlevel10k-media](https://github.com/romkatv/powerlevel10k-media) repository.
 
@@ -374,7 +416,7 @@ You can enable as many segments as you like. It won't slow down your prompt or Z
 | `nodeenv` | node.js environment from [nodeenv](https://github.com/ekalinin/nodeenv) |
 | `nodenv` | node.js environment from [nodenv](https://github.com/nodenv/nodenv) |
 | `node_version` | [node.js](https://nodejs.org/) version |
-| `nordvpn` | [nordvpn](https://nordvpn.com/) connection status |
+| `nordvpn` | [nordvpn](https://nordvpn.com/) connection status (currently disabled: it shows nothing, see upstream [#2860](https://github.com/romkatv/powerlevel10k/issues/2860)) |
 | `nvm` | node.js environment from [nvm](https://github.com/nvm-sh/nvm) |
 | `os_icon` | your OS logo (apple for macOS, swirl for debian, etc.) |
 | `package` | `name@version` from [package.json](https://docs.npmjs.com/files/package.json) |
@@ -907,7 +949,9 @@ The command to update Powerlevel10k depends on how it was installed.
 1. Remove all references to "p10k" from `~/.zshrc`. You might have this snippet at the top:
    ```zsh
    if [[ -r "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh" &&
-         -O "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh" ]]; then
+         -O "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh" &&
+         ( ! -e "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh.zwc" ||
+           -O "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh.zwc" ) ]]; then
      source "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh"
    fi
    ```
@@ -986,6 +1030,11 @@ The command to update Powerlevel10k depends on how it was installed.
 
 To update, remove `~/powerlevel10k` on both machines and repeat steps 1-3.
 
+On machines with Internet access, gitstatus downloads `gitstatusd` from GitHub and, in parallel,
+from a mirror on gitee.com. To download only from GitHub, add `GITSTATUS_DOWNLOAD_MIRROR=0` to
+`~/.zshrc` next to the other `GITSTATUS_*` parameters you set (such as `GITSTATUS_CACHE_DIR` or
+`GITSTATUS_AUTO_INSTALL`).
+
 ### Where can I ask for help and report bugs?
 
 Report bugs in this fork by [opening an issue](https://github.com/zmoffitt/powerlevel10k/issues).
@@ -1062,7 +1111,9 @@ code snippet at the top of `~/.zshrc`:
 # Initialization code that may require console input (password prompts, [y/n]
 # confirmations, etc.) must go above this block; everything else may go below.
 if [[ -r "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh" &&
-      -O "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh" ]]; then
+      -O "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh" &&
+      ( ! -e "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh.zwc" ||
+        -O "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh.zwc" ) ]]; then
   source "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh"
 fi
 ```
@@ -1087,7 +1138,9 @@ Here's an example of `~/.zshrc` that breaks when instant prompt is enabled:
 
 ```zsh
 if [[ -r "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh" &&
-      -O "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh" ]]; then
+      -O "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh" &&
+      ( ! -e "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh.zwc" ||
+        -O "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh.zwc" ) ]]; then
   source "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh"
 fi
 
@@ -1103,7 +1156,9 @@ keychain id_rsa --agents ssh  # moved before instant prompt
 
 # OK to perform console I/O before this point.
 if [[ -r "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh" &&
-      -O "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh" ]]; then
+      -O "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh" &&
+      ( ! -e "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh.zwc" ||
+        -O "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh.zwc" ) ]]; then
   source "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh"
 fi
 # From this point on, until zsh is fully initialized, console input won't work and
@@ -1142,7 +1197,9 @@ If you've enabled [instant prompt](#instant-prompt), you should have these lines
 
 ```zsh
 if [[ -r "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh" &&
-      -O "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh" ]]; then
+      -O "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh" &&
+      ( ! -e "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh.zwc" ||
+        -O "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh.zwc" ) ]]; then
   source "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh"
 fi
 ```
@@ -1153,7 +1210,9 @@ To initialize direnv you need to add one line above that block and one line belo
 (( ${+commands[direnv]} )) && emulate zsh -c "$(direnv export zsh)"
 
 if [[ -r "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh" &&
-      -O "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh" ]]; then
+      -O "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh" &&
+      ( ! -e "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh.zwc" ||
+        -O "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh.zwc" ) ]]; then
   source "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh"
 fi
 
@@ -1518,7 +1577,7 @@ https://www.reddit.com/r/zsh/comments/eg49ff/powerlevel10k_prompt_history_exit_c
 
 ### What is the minimum supported Zsh version?
 
-Zsh 5.3 or newer should work. Fast startup requires Zsh >= 5.4.
+Zsh 5.1 or newer is required (5.3 or newer recommended). Fast startup requires Zsh >= 5.4.
 
 ### How were these screenshots and animated gifs created?
 
@@ -1670,7 +1729,7 @@ running Zsh locally, Google "set UTF-8 locale in *your OS*".
 ### Cursor is in the wrong place
 
 Type `echo '\u276F'`. If you get an error saying "zsh: character not in range", see the
-[previous section](#zsh-character-not-in-range).
+[previous section](#error-character-not-in-range).
 
 If the `echo` command prints `❯` but the cursor is still in the wrong place, install
 [the recommended font](#meslo-nerd-font-patched-for-powerlevel10k) and run

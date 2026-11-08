@@ -1,7 +1,6 @@
 typeset -grA __p9k_pb_cmd_skip=(
   '}'         'always'  # handled specially
   '{'         ''
-  '{'         ''
   '|'         ''
   '||'        ''
   '&'         ''
@@ -14,6 +13,7 @@ typeset -grA __p9k_pb_cmd_skip=(
   '()'        ''
   '!'         ''
   ';'         ''
+  $'\n'       ''  # newline that precedes here-document bodies; see _p9k_parse_buffer
   'if'        ''
   'fi'        ''
   'elif'      ''
@@ -31,11 +31,12 @@ typeset -grA __p9k_pb_cmd_skip=(
   'time'      ''
   '[['        '\]\]'
   '(('        '\)\)'
-  'case'      '\)|esac'
-  ';;'        '\)|esac'
-  ';&'        '\)|esac'
-  ';|'        '\)|esac'
-  'foreach'   '\(*\)'
+  'case'      '\)|\(*\)|esac'
+  ';;'        '\)|\(*\)|esac'
+  ';&'        '\)|\(*\)|esac'
+  ';|'        '\)|\(*\)|esac'
+  'foreach'   '\)'
+  'repeat'    '*'
 )
 
 typeset -grA __p9k_pb_precommand=(
@@ -48,10 +49,11 @@ typeset -grA __p9k_pb_precommand=(
   'eatmydata' ''
   'catchsegv' ''
   'pkexec'    '--user'
-  'doas'      '-[^aCu]#[acU]'
+  'doas'      '-[^aCu]#[aCu]'
+  'env'       '-[^uCSP]#[uCSP]|--(unset|chdir|split-string)'  # NAME=value words are skipped specially
   'nice'      '-[^n]#[n]|--adjustment'
   'stdbuf'    '-[^ioe]#[ioe]|--(input|output|error)'
-  'sudo'      '-[^aghpuUCcrtT]#[aghpuUCcrtT]|--(close-from|group|host|prompt|role|type|other-user|command-timeout|user)'
+  'sudo'      '-[^aghpuUCcrtTDR]#[aghpuUCcrtTDR]|--(close-from|group|host|prompt|role|type|other-user|command-timeout|user|chdir|chroot)'
   'ssh-agent' '-[^aEPt]#[aEPt]'
   'tabbed'    '-[^gnprtTuU]#[gnprtTuU]'
   'chronic'   ''
@@ -79,6 +81,7 @@ typeset -grA __p9k_pb_term=(
   '|'  ''
   '||' ''
   ';'  ''
+  $'\n' ''
   '&'  ''
   '&&' ''
   '|&' ''
@@ -95,9 +98,9 @@ typeset -grA __p9k_pb_term=(
 
 typeset -grA __p9k_pb_term_skip=(
   '('  '\)'
-  ';;' '\)|esac'
-  ';&' '\)|esac'
-  ';|' '\)|esac'
+  ';;' '\)|\(*\)|esac'
+  ';&' '\)|\(*\)|esac'
+  ';|' '\)|\(*\)|esac'
 )
 
 # Usage: _p9k_parse_buffer <buffer> [token-limit]
@@ -125,10 +128,6 @@ typeset -grA __p9k_pb_term_skip=(
 #   ---------------
 #   alias x=y; y
 #   ---------------
-#   x <<END
-#   ; END
-#   END
-#   ---------------
 #   Setup:
 #     setopt interactive_comments
 #     alias x='#'
@@ -153,15 +152,30 @@ function _p9k_parse_buffer() {
   local -r id='(<->|[[:alpha:]_][[:IDENT:]]#)'
   local -r var="\$$id|\${$id}|\"\$$id\"|\"\${$id}\""
 
-  local -i e ic c=${2:-'1 << 62'}
+  local -i e ic i j m napp c=${2:-'1 << 62'}
   local skip n s r state token cmd prev
-  local -a aln alp alf v
+  local -a aln alp alf v hd
 
   if [[ -o interactive_comments ]]; then
     ic=1
     local tokens=(${(Z+C+)1})
   else
     local tokens=(${(z)1})
+  fi
+
+  if [[ $1 == *'<<'* ]]; then
+    # (z) turns newlines into `;` but here-document bodies start after the first newline
+    # following `<<`. Mark newlines as $'\n' by aligning with a tokenization that treats
+    # them as whitespace. Aligning from the end marks the first `;` of a run as newline.
+    local -a nl
+    (( ic )) && nl=(${(Z+Cn+)1}) || nl=(${(Z+n+)1})
+    for (( i = $#tokens, j = $#nl; i > 0; --i )); do
+      if (( j )) && [[ $tokens[i] == "$nl[j]" ]]; then
+        (( --j ))
+      elif [[ $tokens[i] == ';' ]]; then
+        tokens[i]=$'\n'
+      fi
+    done
   fi
 
   {
@@ -180,6 +194,7 @@ function _p9k_parse_buffer() {
       while (( c-- > 0 )) || return; do
         token=$tokens[1]
         tokens[1]=()
+        (( napp > $#tokens )) && napp=$#tokens
         if (( $+galiases[$token] )); then
           (( $aln[(eI)p$token] )) && break
           s=$galiases[$token]
@@ -204,21 +219,66 @@ function _p9k_parse_buffer() {
         (( ic )) && tokens[1,0]=(${(Z+C+)s}) || tokens[1,0]=(${(z)s})
       done
 
+      if [[ $token == $'\n' ]] && (( $#hd )); then
+        # Skip the bodies of pending here-documents in order. Each body ends with a line
+        # that consists of its delimiter. Only the buffer's own tokens are searched: the
+        # last napp tokens come from command substitutions and are never part of a body.
+        for (( j = 1; j <= $#hd; ++j )); do
+          (( m = $#tokens - napp ))
+          (( j > 1 && m > 0 )) && [[ $tokens[1] == $'\n' ]] && { tokens[1]=(); (( --m )) }
+          for (( i = 1; i <= m; ++i )); do
+            [[ $tokens[i] == "$hd[j]" ]] || continue
+            (( i == 1 )) || [[ $tokens[i-1] == $'\n' ]] || continue
+            (( i == m )) || [[ $tokens[i+1] == $'\n' ]] || continue
+            break
+          done
+          (( i > m )) && (( i = m ))
+          (( i > 0 )) && tokens[1,i]=()
+        done
+        hd=()
+        while (( $#alp && alp[-1] > $#tokens )); do
+          aln[-1]=()
+          alp[-1]=()
+        done
+        while (( $#alf && alf[-1] > $#tokens )); do
+          alf[-1]=()
+        done
+      fi
+
       case $token in
-        '<<'(|-))
-          state=h
+        '<<'(|-)|<0-255>'<<'(|-))
+          state+=h
           continue
           ;;
         *('`'|['<>=$']'(')*)
-          if [[ $token == ('`'[^'`']##'`'|'"`'[^'`']##'`"'|'$('[^')']##')'|'"$('[^')']##')"'|['<>=']'('[^')']##')') ]]; then
-            s=${${token##('"'|)(['$<>']|)?}%%?('"'|)}
-            (( ic )) && tokens+=(';' ${(Z+C+)s}) || tokens+=(';' ${(z)s})
+          # Strip the assignment prefix, if any: x=$(cmd).
+          n=${(S)token/#(<->|([[:alpha:]_][[:IDENT:]]#(|'['*[^\\](\\\\)#']')))(|'+')=}
+          if [[ $n == ('`'[^'`']##'`'|'"`'[^'`']##'`"'|'$('[^')']##')'|'"$('[^')']##')"'|['<>=']'('[^')']##')') ]]; then
+            s=${${n##('"'|)(['$<>']|)?}%%?('"'|)}
+            # Separate with a newline rather than ';' so that a here-document delimiter on the
+            # last line of the buffer is still followed by a newline token.
+            (( ic )) && v=($'\n' ${(Z+C+)s}) || v=($'\n' ${(z)s})
+            tokens+=("${v[@]}")
+            (( napp += $#v ))
+            # Tokens appended at the end shift the positions recorded for aliases.
+            for (( i = 1; i <= $#alp; ++i )); do
+              (( alp[i] += $#v ))
+            done
+            for (( i = 1; i <= $#alf; ++i )); do
+              (( alf[i] += $#v ))
+            done
           fi
           ;;
       esac
 
       case $state in
         *r)
+          state[-1]=
+          continue
+          ;;
+        *h)
+          # The body is skipped at the next newline.
+          hd+=("${(Q)token}")
           state[-1]=
           continue
           ;;
@@ -270,23 +330,6 @@ function _p9k_parse_buffer() {
           fi
           continue
           ;;
-        h)
-          while (( $#tokens )); do
-            (( e = ${tokens[(i)${(Q)token}]} ))
-            if [[ $tokens[e-1] == ';' && $tokens[e+1] == ';' ]]; then
-              tokens[1,e]=()
-              break
-            else
-              tokens[1,e]=()
-            fi
-          done
-          while (( $#alp && alp[-1] >= $#tokens )); do
-            aln[-1]=()
-            alp[-1]=()
-          done
-          state=t
-          continue
-          ;;
       esac
 
       if (( $+__p9k_pb_redirect[${token#<0-255>}] )); then
@@ -296,7 +339,7 @@ function _p9k_parse_buffer() {
 
       if [[ $token == *'$'* ]]; then
         if [[ $token == $~var ]]; then
-          n=${${token##[^[:IDENT:]]}%%[^[:IDENT:]]}
+          n=${${token##[^[:IDENT:]]#}%%[^[:IDENT:]]#}
           [[ $token == *'"' ]] && v=("${(P)n}") || v=(${(P)n})
           tokens[1,0]=(${(@qq)v})
           continue
@@ -310,6 +353,8 @@ function _p9k_parse_buffer() {
             [[ $token == '}' ]] && state=a || state=${skip:+s}
             continue
           fi
+          # `while (( x )) { y }`: arithmetic evaluation keeps the command position.
+          [[ $token == '(('*'))' ]] && continue
           if [[ $token == *=* ]]; then
             v=${(S)token/#(<->|([[:alpha:]_][[:IDENT:]]#(|'['*[^\\](\\\\)#']')))(|'+')=}
             if (( $#v < $#token )); then
@@ -344,6 +389,8 @@ function _p9k_parse_buffer() {
             : ${token::=${(Q)${~token}}}
             case $token in
               '{'$~id'}') prev=$token; state=px; continue;;
+              [_[:alpha:]][[:IDENT:]]#=*)
+                [[ $cmd == (|*$'\0')env$'\0' ]] && continue;;
               [^-]*)                                     ;;
               --)                      state=p1; continue;;
               $~skip)                  state=p2; continue;;
@@ -362,6 +409,7 @@ function _p9k_parse_buffer() {
               prev=$token
               continue
             fi
+            [[ $token == [[:alpha:]_][[:IDENT:]]#=* && $cmd == (|*$'\0')env$'\0' ]] && continue
           fi
           ;;
       esac

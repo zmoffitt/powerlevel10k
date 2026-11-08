@@ -712,7 +712,7 @@ function _p9k_init_icons() {
         LINUX_ENDEAVOUROS_ICON         '\uF17C'               # 
         LINUX_ROCKY_ICON               '\uF17C'               # 
         LINUX_ALMALINUX_ICON           '\uF17C'               # 
-        LINUX_GUIX_ICON                '\uF325'$s             # 
+        LINUX_GUIX_ICON                '\uF17C'               # 
         LINUX_NEON_ICON                '\uF17C'               # 
         LINUX_ICON                     '\uF17C'               # 
         SUNOS_ICON                     '\uF185 '              # 
@@ -1136,11 +1136,11 @@ function _p9k_init_icons() {
     icons=("${(@kv)icons%% #}")
     icons[LEFT_SEGMENT_END_SEPARATOR]+=' '
     icons[MULTILINE_LAST_PROMPT_PREFIX]+=' '
-    icons[VCS_TAG_ICON]+=' '
-    icons[VCS_BOOKMARK_ICON]+=' '
-    icons[VCS_COMMIT_ICON]+=' '
-    icons[VCS_BRANCH_ICON]+=' '
-    icons[VCS_REMOTE_BRANCH_ICON]+=' '
+    local k
+    for k in VCS_TAG_ICON VCS_BOOKMARK_ICON VCS_COMMIT_ICON VCS_BRANCH_ICON VCS_REMOTE_BRANCH_ICON; do
+      # Empty icons (e.g. VCS_TAG_ICON in powerline mode) must stay empty.
+      [[ -z $icons[$k] ]] || icons[$k]+=' '
+    done
   fi
 }
 

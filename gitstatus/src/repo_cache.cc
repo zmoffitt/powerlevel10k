@@ -17,6 +17,8 @@
 
 #include "repo_cache.h"
 
+#include <sys/stat.h>
+
 #include <cstring>
 
 #include "check.h"
@@ -107,9 +109,20 @@ Repo* RepoCache::Open(const std::string& dir, bool from_dotgit) {
 
   auto it = cache_.find(gitdir);
   if (it != cache_.end()) {
-    lru_.erase(it->second->lru);
-    it->second->lru = lru_.insert({Clock::now(), it});
-    return it->second.get();
+    // `git worktree move` keeps gitdir but changes workdir. The workdir strings may legitimately
+    // differ in canonicalization, so reopen only if the cached workdir is gone.
+    const char* cached_workdir = git_repository_workdir(it->second->repo());
+    struct stat st;
+    if (cached_workdir && workdir != cached_workdir &&
+        (stat(cached_workdir, &st) || !S_ISDIR(st.st_mode))) {
+      LOG(INFO) << "Workdir of " << Print(gitdir) << " has moved from " << Print(cached_workdir)
+                << " to " << Print(workdir);
+      Erase(it);
+    } else {
+      lru_.erase(it->second->lru);
+      it->second->lru = lru_.insert({Clock::now(), it});
+      return it->second.get();
+    }
   }
 
   // Opening from gitdir is faster but we cannot use it when gitdir came from a .git file.

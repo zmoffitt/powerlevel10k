@@ -1,5 +1,19 @@
 # Powerlevel10k fork review — findings
 
+**Status (2026-11-08):** a second, larger review pass (52 finders over every file plus the 132 open
+and 54 recently closed upstream issues and 23 open upstream PRs, 207 merged findings, 175
+adversarial verifier runs, 200 confirmed) was fixed on branch `fix/comprehensive-review`. It covers
+sections 2–5 below as well as new findings; each commit on that branch lists the finding ids it
+fixes. Items deliberately left open after that pass: the pinned libgit2 lacks `worktreeConfig` /
+`reftable` support (#2941, #2886; needs a gitstatusd rebuild), SHA-256 repositories (#2459, #2703;
+same), gitstatusd's per-submodule dirty scan (#1608), a relative `GIT_DIR` sharing cached vcs state
+between repositories, host-specific cache file names for homes shared across machines, distinct
+OpenBSD/NetBSD icons (#2771), the command parser's locals shadowing `$cmd`-style variables used in
+command position, and the README fix list. Refuted and therefore not changed: bash `gitstatus_query`
+clearing `VCS_STATUS_*` on failure, `toolbox` container-name escaping, `python3` fallback in
+`_p9k_python_version`, the nvm alias cycle check, `P9K_WIFI_SSID` escaping,
+`_POWERLEVEL9K_VCS_DISABLED_DIR_PATTERN` declaration, and Pop!_OS/Zorin icons.
+
 Reviewed: `zmoffitt/powerlevel10k` at `c1f5ee51` (branch `docs/fork-links`, at parity with upstream `romkatv/powerlevel10k` master `d05a1b00` plus 10 fork commits). Date: 2026-11-01.
 
 Method: 39 independent reviewer passes (two lenses over each of 11 regions of `internal/p10k.zsh`, one pass per other file group, 6 passes cross-referencing the 132 open upstream issues, 3 passes over the 21 open upstream PRs), producing 192 candidate findings (150 unique). Each unique finding was scheduled for three adversarial verifiers with different lenses (code reading, reproduction, maintainer intent). Verification was stopped on request after 279 votes: 76 findings were fully voted (71 confirmed by at least 2 of 3, 1 contested, 5 refuted) and 74 received no votes. I spot-checked the high/medium unverified items by hand; the rest are listed as unverified.

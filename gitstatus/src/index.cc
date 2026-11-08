@@ -25,6 +25,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <cstring>
+#include <ctime>
 #include <iomanip>
 #include <iterator>
 #include <mutex>
@@ -111,9 +112,11 @@ void OpenTail(int* fds, size_t nfds, int root_fd, StringView dirname, Arena& are
   CHECK(fds && nfds && root_fd >= 0);
   std::fill(fds, fds + nfds, -1);
   if (!dirname.len) return;
-  CHECK(dirname.len > 1);
-  CHECK(dirname.ptr[0] != '/');
-  CHECK(dirname.ptr[dirname.len - 1] == '/');
+  // Index paths aren't validated (see GIT_OPT_DISABLE_INDEX_FILEPATH_VALIDATION), so a crafted
+  // index must fail the request rather than abort the process.
+  VERIFY(dirname.len > 1) << Print(dirname);
+  VERIFY(dirname.ptr[0] != '/') << Print(dirname);
+  VERIFY(dirname.ptr[dirname.len - 1] == '/') << Print(dirname);
 
   char* begin = arena.StrDup(dirname.ptr, dirname.len - 1);
   WithArena<std::vector<const char*>> subdirs(&arena);
@@ -146,6 +149,7 @@ std::vector<const char*> ScanDirs(git_index* index, int root_fd, IndexDir* const
                                   IndexDir* const* end, const RepoCaps& caps,
                                   const ScanOpts& opts) {
   const Str<> str(caps.case_sensitive);
+  const std::time_t now = std::time(nullptr);
 
   Arena arena;
   std::vector<const char*> dirty_candidates;
@@ -180,7 +184,9 @@ std::vector<const char*> ScanDirs(git_index* index, int root_fd, IndexDir* const
         dir.st = {};
         dir.unmatched.clear();
         dir.arena.Reuse();
-      } else if (str.Eq(basename, StringView(".git/"))) {
+      } else if (str.Eq(basename, StringView(".git/")) ||
+                 (!dir.path.len && str.Eq(basename, StringView(".git")))) {
+        // In linked worktrees and submodules .git at the root is a file.
         return;
       }
       char* path = dir.arena.StrCat(dir.path, basename);
@@ -210,8 +216,8 @@ std::vector<const char*> ScanDirs(git_index* index, int root_fd, IndexDir* const
     } else {
       CloseAll();
       if (dir.path.len) {
-        CHECK(dir.path.ptr[0] != '/');
-        CHECK(dir.path.ptr[dir.path.len - 1] == '/');
+        VERIFY(dir.path.ptr[0] != '/') << Print(dir.path);
+        VERIFY(dir.path.ptr[dir.path.len - 1] == '/') << Print(dir.path);
         *dir_fd = OpenDir(root_fd, arena.StrDup(dir.path.ptr, dir.path.len - 1));
       } else {
         VERIFY((*dir_fd = dup(root_fd)) >= 0) << Errno();
@@ -240,6 +246,9 @@ std::vector<const char*> ScanDirs(git_index* index, int root_fd, IndexDir* const
         continue;
       }
       dir.st = st;
+      // An entry created later within the same mtime tick won't change st. Don't trust st of
+      // recently modified directories, so that they get listed again (cf. racy git).
+      if (MTim(st).tv_sec >= now - 2) dir.st = {};
     }
 
     entries.clear();

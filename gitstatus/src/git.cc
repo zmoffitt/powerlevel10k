@@ -204,9 +204,11 @@ RemotePtr GetRemote(git_repository* repo, const git_reference* local) {
   if (git_branch_name(&branch, ref)) {
     branch = "";
   } else if (remote) {
-    VERIFY(std::strstr(branch, name.c_str()) == branch);
-    VERIFY(branch[name.size()] == '/');
-    branch += name.size() + 1;
+    // A fetch refspec may map the remote into a different namespace (e.g. refs/remotes/mirror/*).
+    // In that case keep the full shorthand.
+    if (!std::strncmp(branch, name.c_str(), name.size()) && branch[name.size()] == '/') {
+      branch += name.size() + 1;
+    }
   }
 
   auto res = std::make_unique<Remote>();
