@@ -5,7 +5,7 @@
 _gitstatus_install_daemon_found() {
   local installed="$1"
   shift
-  [ $# = 0 ] || "$@" "$daemon" "$version" "$installed"
+  [ $# = 0 ] || "$@" "$daemon" "$version" "$installed" "$cache_dir"
 }
 
 # Succeeds if all arguments are owned by the current user or by root. Uses find if available
@@ -59,12 +59,13 @@ Usage: install [-s KERNEL] [-m ARCH] [-d DIR] [-p CMD] [-e ERRFD] [-f|-n] [-- CM
 
 If positional arguments are specified, call this on success:
 
-  CMD [ARG]... DAEMON VERSION INSTALLED
+  CMD [ARG]... DAEMON VERSION INSTALLED CACHE_DIR
 
 DAEMON is path to gitstatusd. VERSION is a glob pattern for the
 version this daemon should support; it's supposed to be passed as
 -G to gitstatusd. INSTALLED is 1 if gitstatusd has just been
-downloaded and 0 otherwise.
+downloaded and 0 otherwise. CACHE_DIR is the directory where
+downloaded gitstatusd binaries are stored.
 
 Options:
 
@@ -176,14 +177,22 @@ END
   local cache_dir="${GITSTATUS_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/gitstatus}"
 
   # Root shells that keep a regular user's HOME (e.g., `sudo -s` on macOS) would find the cache
-  # dir owned by that user. Neither the cached binary nor a download into that directory can be
-  # trusted, so use root's own cache instead.
-  if [ -z "${GITSTATUS_CACHE_DIR:-}" ] && [ -d "$cache_dir" ] && ! [ -O "$cache_dir" ] &&
-     [ "$(command id -u 2>/dev/null)" = 0 ]; then
-    local root_home=
-    eval 'root_home=~root'
-    if [ -n "$root_home" ] && [ -z "${root_home##/*}" ]; then
-      cache_dir="$root_home"/.cache/gitstatus
+  # dir (or, if it does not exist yet, the nearest existing parent) owned by that user. Neither
+  # the cached binary nor a download into that directory can be trusted, and creating it would
+  # leave a root-owned directory in the user's HOME, so use root's own cache instead.
+  if [ -z "${GITSTATUS_CACHE_DIR:-}" ]; then
+    local cache_parent="$cache_dir"
+    while [ ! -e "$cache_parent" ] && [ ! -h "$cache_parent" ] &&
+          [ "${cache_parent%/*}" != "$cache_parent" ]; do
+      cache_parent="${cache_parent%/*}"
+      [ -n "$cache_parent" ] || cache_parent=/
+    done
+    if ! [ -O "$cache_parent" ] && [ "$(command id -u 2>/dev/null)" = 0 ]; then
+      local root_home=
+      eval 'root_home=~root'
+      if [ -n "$root_home" ] && [ -z "${root_home##/*}" ]; then
+        cache_dir="$root_home"/.cache/gitstatus
+      fi
     fi
   fi
 

@@ -152,7 +152,7 @@ function _p9k_parse_buffer() {
   local -r id='(<->|[[:alpha:]_][[:IDENT:]]#)'
   local -r var="\$$id|\${$id}|\"\$$id\"|\"\${$id}\""
 
-  local -i e ic i j c=${2:-'1 << 62'}
+  local -i e ic i j m napp c=${2:-'1 << 62'}
   local skip n s r state token cmd prev
   local -a aln alp alf v hd
 
@@ -194,6 +194,7 @@ function _p9k_parse_buffer() {
       while (( c-- > 0 )) || return; do
         token=$tokens[1]
         tokens[1]=()
+        (( napp > $#tokens )) && napp=$#tokens
         if (( $+galiases[$token] )); then
           (( $aln[(eI)p$token] )) && break
           s=$galiases[$token]
@@ -220,16 +221,19 @@ function _p9k_parse_buffer() {
 
       if [[ $token == $'\n' ]] && (( $#hd )); then
         # Skip the bodies of pending here-documents in order. Each body ends with a line
-        # that consists of its delimiter.
+        # that consists of its delimiter. Only the buffer's own tokens are searched: the
+        # last napp tokens come from command substitutions and are never part of a body.
         for (( j = 1; j <= $#hd; ++j )); do
-          (( j > 1 )) && [[ $tokens[1] == $'\n' ]] && tokens[1]=()
-          for (( i = 1; i <= $#tokens; ++i )); do
+          (( m = $#tokens - napp ))
+          (( j > 1 && m > 0 )) && [[ $tokens[1] == $'\n' ]] && { tokens[1]=(); (( --m )) }
+          for (( i = 1; i <= m; ++i )); do
             [[ $tokens[i] == "$hd[j]" ]] || continue
             (( i == 1 )) || [[ $tokens[i-1] == $'\n' ]] || continue
-            (( i == $#tokens )) || [[ $tokens[i+1] == $'\n' ]] || continue
+            (( i == m )) || [[ $tokens[i+1] == $'\n' ]] || continue
             break
           done
-          tokens[1,i]=()
+          (( i > m )) && (( i = m ))
+          (( i > 0 )) && tokens[1,i]=()
         done
         hd=()
         while (( $#alp && alp[-1] > $#tokens )); do
@@ -255,6 +259,7 @@ function _p9k_parse_buffer() {
             # last line of the buffer is still followed by a newline token.
             (( ic )) && v=($'\n' ${(Z+C+)s}) || v=($'\n' ${(z)s})
             tokens+=("${v[@]}")
+            (( napp += $#v ))
             # Tokens appended at the end shift the positions recorded for aliases.
             for (( i = 1; i <= $#alp; ++i )); do
               (( alp[i] += $#v ))

@@ -421,11 +421,13 @@ function _gitstatus_daemon"${1:-}"() {
       zf_rm -- $file_prefix.fifo            || return
 
       local _gitstatus_zsh_daemon _gitstatus_zsh_version _gitstatus_zsh_downloaded
+      local _gitstatus_zsh_cache_dir
 
       function _gitstatus_set_daemon$fsuf() {
         _gitstatus_zsh_daemon="$1"
         _gitstatus_zsh_version="$2"
         _gitstatus_zsh_downloaded="$3"
+        _gitstatus_zsh_cache_dir="${4:-${GITSTATUS_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/gitstatus}}"
       }
 
       local gitstatus_plugin_dir_var=_gitstatus_plugin_dir$fsuf
@@ -455,8 +457,7 @@ function _gitstatus_daemon"${1:-}"() {
 
       (( ! _gitstatus_zsh_downloaded ))                || return
       [[ ${GITSTATUS_AUTO_INSTALL:-1} == (|-|+)<1-> ]] || return
-      [[ $_gitstatus_zsh_daemon == \
-         ${GITSTATUS_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/gitstatus}/* ]] || return
+      [[ $_gitstatus_zsh_daemon == $_gitstatus_zsh_cache_dir/* ]] || return
 
       builtin set -- -f "$@"
       _gitstatus_zsh_daemon=

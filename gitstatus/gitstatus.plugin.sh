@@ -159,11 +159,13 @@ function gitstatus_start() {
           echo "$BASHPID" >&"$fd_out"
 
           local _gitstatus_bash_daemon _gitstatus_bash_version _gitstatus_bash_downloaded
+          local _gitstatus_bash_cache_dir
 
           function _gitstatus_set_daemon() {
             _gitstatus_bash_daemon="$1"
             _gitstatus_bash_version="$2"
             _gitstatus_bash_downloaded="$3"
+            _gitstatus_bash_cache_dir="${4:-${GITSTATUS_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/gitstatus}}"
           }
 
           set -- -d "$gitstatus_plugin_dir" -s "$uname_s" -m "$uname_m" \
@@ -204,8 +206,7 @@ function gitstatus_start() {
 
           (( ! _gitstatus_bash_downloaded ))         || return
           [[ "${GITSTATUS_AUTO_INSTALL:-1}" -ne 0 ]] || return
-          [[ "$_gitstatus_bash_daemon" == \
-             "${GITSTATUS_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/gitstatus}"/* ]] || return
+          [[ "$_gitstatus_bash_daemon" == "$_gitstatus_bash_cache_dir"/* ]] || return
 
           set -- -f "$@"
           _gitstatus_bash_daemon=

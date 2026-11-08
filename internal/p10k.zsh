@@ -2318,10 +2318,12 @@ prompt_go_version() {
   # With GOTOOLCHAIN=auto (the default) go switches to, and downloads, the toolchain requested
   # by go.mod/go.work in the current directory. The output is cached regardless of the
   # directory, so pin the toolchain that applies outside of modules. Keep <name>+path as is:
-  # a bare <name> would let go download it when it's not installed.
+  # a bare <name> would let go download it when it's not installed. GO111MODULE=off stops go
+  # from consulting go.mod/go.work at all, so even +path can't pick a directory-dependent
+  # toolchain (and fail when it's not on PATH).
   local toolchain=${GOTOOLCHAIN%+auto}
-  [[ $toolchain == (|auto|path) ]] && toolchain=local
-  local -x GOTOOLCHAIN=$toolchain
+  [[ $toolchain == (|auto|path|local+path) ]] && toolchain=local
+  local -x GOTOOLCHAIN=$toolchain GO111MODULE=off
   _p9k_cached_cmd 0 '' go version || return
   [[ $_p9k__ret == (#b)*go([[:digit:].]##)* ]] || return
   local v=$match[1]
@@ -2332,8 +2334,12 @@ prompt_go_version() {
         p=$HOME/go
       else
         # `go env -w GOPATH=...` writes to the go env file, so the output depends on it.
+        # GOENV=off disables the file. A relative GOENV would make the dependency (and the
+        # output) depend on the current directory, so don't track it.
         local goenv=$GOENV
-        if [[ -z $goenv ]]; then
+        if [[ $goenv == off || -n $goenv && $goenv != /* ]]; then
+          goenv=
+        elif [[ -z $goenv ]]; then
           if [[ $_p9k_os == OSX ]]; then
             goenv=$HOME/'Library/Application Support/go/env'
           else
@@ -5005,14 +5011,22 @@ prompt_java_version() {
     # jenv, asdf and mise shims pick the Java version per directory behind a fixed path.
     # They keep walking up past files that don't pin Java (e.g. a .tool-versions with
     # only nodejs), so every parent directory with a version file is a dependency.
-    label+=" ${(q)JENV_VERSION} ${(q)ASDF_JAVA_VERSION} ${(q)MISE_JAVA_VERSION}"
+    label+=" ${(q)JENV_VERSION} ${(q)ASDF_JAVA_VERSION} ${(q)MISE_JAVA_VERSION} ${(q)MISE_ENV}"
     local mise_cfg=${MISE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/mise}
     file_deps=(
       ${JENV_ROOT:-$HOME/.jenv}/version $HOME/.tool-versions
-      $mise_cfg/config.toml $mise_cfg/config.local.toml)
+      $mise_cfg/config.toml $mise_cfg/config.local.toml /etc/mise/config.toml)
     local -a names=(.java-version .tool-versions mise.toml .mise.toml mise.local.toml .mise.local.toml)
+    # mise also reads config files inside subdirectories (creating or editing them doesn't
+    # touch the parent directory) and per-environment files. These are always dependencies.
+    local -a mise_names=(.config/mise.toml .config/mise/config.toml mise/config.toml .mise/config.toml)
+    local mise_env
+    for mise_env in ${(s:,:)MISE_ENV}; do
+      mise_names+=(mise.$mise_env.toml .mise.$mise_env.toml)
+    done
     local -i i
     for ((i = 1; i <= $#_p9k__parent_dirs; ++i)); do
+      file_deps+=($_p9k__parent_dirs[i]/$^mise_names)
       _p9k_glob $i '(.java-version|.tool-versions|mise.toml|.mise.toml|mise.local.toml|.mise.local.toml)' -. &&
         continue
       file_deps+=($_p9k__parent_dirs[i]/$^names)
@@ -7839,6 +7853,7 @@ _p9k_init_vars() {
   typeset -ga _p9k__last_commands
   typeset -gi _p9k__comp_active
   typeset -g  _p9k__comp_widget
+  typeset -g  _p9k__lastwidget
   typeset -gi  _p9k__fully_initialized
   typeset -gi _p9k__must_restore_prompt
   typeset -gi _p9k__restore_prompt_fd
@@ -8515,16 +8530,25 @@ function _p9k_deschedule_redraw() {
   _p9k__redraw_fd=0
 }
 
-# Called by compsys (_main_complete) at the start of every completion. zle-line-pre-redraw runs
-# many times while a completion widget is still running (first match inserted, menu drawn, every
-# move through the menu) and LASTWIDGET there still names the widget that ran before it, so remember
-# that widget: as long as LASTWIDGET is unchanged, the completion widget has not returned yet.
+# Called by compsys (_main_complete) at the start of every completion. Menu selection runs after
+# _main_complete returns but before the completion widget does, and zle-line-pre-redraw runs on
+# every move through the menu with LASTWIDGET naming the completion widget. _p9k_on_complete_post
+# keeps _p9k__comp_active set only when such a menu is about to be shown; it stays set until
+# LASTWIDGET names some other widget. Completions started from a zle -F handler or from within
+# another widget (zsh-autocomplete and the like) are not followed by a menu and clear it right away.
 function _p9k_on_complete() {
   eval "$__p9k_intro"
-  _p9k__comp_widget=${LASTWIDGET-}
+  _p9k__comp_widget=${WIDGET-}
   _p9k__comp_active=1
-  # _main_complete empties compprefuncs before calling the functions in it.
+  # _main_complete empties compprefuncs and comppostfuncs before calling the functions in them.
   (( ${compprefuncs[(Ie)_p9k_on_complete]} )) || compprefuncs+=(_p9k_on_complete)
+  (( ${comppostfuncs[(Ie)_p9k_on_complete_post]} )) || comppostfuncs+=(_p9k_on_complete_post)
+}
+
+function _p9k_on_complete_post() {
+  eval "$__p9k_intro"
+  # Menu selection starts only for menu completion with MENUSELECT set.
+  [[ ${compstate[insert]-} == *menu* && -n ${MENUSELECT+x} ]] || _p9k__comp_active=0
 }
 
 function _p9k_widget_hook() {
@@ -8553,9 +8577,11 @@ function _p9k_widget_hook() {
   fi
   __p9k_reset_state=1
   _p9k_check_visual_mode
-  local pat idx var w=$1
-  [[ $w == (|zle-line-pre-redraw) ]] && w=${LASTWIDGET-}
-  (( _p9k__comp_active )) && [[ ${LASTWIDGET-} != "$_p9k__comp_widget" ]] && _p9k__comp_active=0
+  local pat idx var w=$1 lw=${LASTWIDGET-}
+  # A chained zle-line-pre-redraw widget changes LASTWIDGET, so use the value saved before it ran.
+  [[ $w == zle-line-pre-redraw ]] && lw=$_p9k__lastwidget
+  [[ $w == (|zle-line-pre-redraw) ]] && w=$lw
+  (( _p9k__comp_active )) && [[ $lw != "$_p9k__comp_widget" ]] && _p9k__comp_active=0
   # reset-prompt while the completion menu is shown wipes the menu (zsh-workers 2019/msg00161),
   # so defer SHOW_ON_COMMAND updates while a completion widget is running (_p9k__comp_active,
   # set by compsys) and until the next non-completion widget. KEYMAP is not menuselect in
@@ -8593,7 +8619,7 @@ function _p9k_widget() {
 
 function _p9k_widget_zle-line-pre-redraw-impl() {
   # Notice that the completion widget has returned even if this redraw is skipped below.
-  (( _p9k__comp_active )) && [[ ${LASTWIDGET-} != "$_p9k__comp_widget" ]] && _p9k__comp_active=0
+  (( _p9k__comp_active )) && [[ $_p9k__lastwidget != "$_p9k__comp_widget" ]] && _p9k__comp_active=0
   (( __p9k_enabled )) && [[ $CONTEXT == start ]] || return 0
   ! (( ${+functions[p10k-on-post-widget]} || ${#_p9k_show_on_command} || _p9k__restore_prompt_fd || _p9k__redraw_fd )) &&
       [[ ${KEYMAP:-} != vicmd ]] &&
@@ -8697,12 +8723,15 @@ function _p9k_wrap_widgets() {
   case ${widgets[._p9k_orig_zle-line-pre-redraw]:-} in
     user:-z4h-zle-line-pre-redraw)
       function _p9k_widget_zle-line-pre-redraw() {
+        _p9k__lastwidget=${LASTWIDGET-}
         -z4h-zle-line-pre-redraw "$@"
         _p9k_widget_zle-line-pre-redraw-impl
       }
     ;;
     ?*)
       function _p9k_widget_zle-line-pre-redraw() {
+        # `zle ._p9k_orig_zle-line-pre-redraw` sets LASTWIDGET to its own name.
+        _p9k__lastwidget=${LASTWIDGET-}
         zle ._p9k_orig_zle-line-pre-redraw -- "$@"
         local -i res=$?
         _p9k_widget_zle-line-pre-redraw-impl
@@ -8711,6 +8740,7 @@ function _p9k_wrap_widgets() {
     ;;
     '')
       function _p9k_widget_zle-line-pre-redraw() {
+        _p9k__lastwidget=${LASTWIDGET-}
         _p9k_widget_zle-line-pre-redraw-impl
       }
     ;;
