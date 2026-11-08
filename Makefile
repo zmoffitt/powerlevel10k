@@ -8,7 +8,7 @@ zwc:
 
 minify:
 	$(MAKE) -C gitstatus minify
-	rm -rf -- .git .gitattributes .gitignore LICENSE Makefile README.md font.md powerlevel10k.png
+	rm -rf -- .git .gitattributes .gitignore LICENSE Makefile README.md font.md powerlevel10k.png review-findings.md
 
 pkg: zwc
 	$(MAKE) -C gitstatus pkg

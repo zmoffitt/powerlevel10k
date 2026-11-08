@@ -18,7 +18,8 @@
 [[ ! -o 'aliases'         ]] || __p9k_src_opts+=('aliases')
 [[ ! -o 'sh_glob'         ]] || __p9k_src_opts+=('sh_glob')
 [[ ! -o 'no_brace_expand' ]] || __p9k_src_opts+=('no_brace_expand')
-'builtin' 'setopt' 'no_aliases' 'no_sh_glob' 'brace_expand'
+[[ ! -o 'ignore_close_braces' ]] || __p9k_src_opts+=('ignore_close_braces')
+'builtin' 'setopt' 'no_aliases' 'no_sh_glob' 'brace_expand' 'no_ignore_close_braces'
 
 (( $+__p9k_root_dir )) || typeset -gr __p9k_root_dir=${POWERLEVEL9K_INSTALLATION_DIR:-${${(%):-%x}:A:h}}
 (( $+__p9k_intro )) || {
@@ -26,7 +27,7 @@
   # __p9k_trapint is to work around bugs in zsh: https://www.zsh.org/mla/workers/2020/msg00612.html.
   # Likewise for `trap ":"` instead of the plain `trap ""`.
   typeset -gr __p9k_intro_base='emulate -L zsh -o no_hist_expand -o extended_glob -o no_prompt_bang -o prompt_percent -o no_prompt_subst -o no_aliases -o no_bg_nice -o typeset_silent -o no_rematch_pcre
-  (( $+__p9k_trapped )) || { local -i __p9k_trapped; trap : INT; trap "trap ${(q)__p9k_trapint:--} INT" EXIT }
+  (( $+__p9k_trapped )) || { local -i __p9k_trapped; trap : INT; trap "trap ${(q)__p9k_trapint:--} INT" EXIT; }
   local -a match mbegin mend
   local -i MBEGIN MEND OPTIND
   local MATCH OPTARG IFS=$'\'' \t\n\0'\'
@@ -36,7 +37,7 @@
       utf-8|UTF-8|utf8|UTF8) false;;
       *) true;;
     esac
-  } && _p9k_init_locale && { [[ -n "$LC_ALL" ]] && local LC_ALL=$__p9k_locale || local LC_CTYPE=$__p9k_locale }'
+  } && _p9k_init_locale && { [[ -n "$LC_ALL" ]] && local LC_ALL=$__p9k_locale || local LC_CTYPE=$__p9k_locale; }'
   typeset -gr __p9k_intro_no_locale="${${__p9k_intro_base/ match / match reply }/ MATCH / MATCH REPLY }"
   typeset -gr __p9k_intro_no_reply="$__p9k_intro_base; $__p9k_intro_locale"
   typeset -gr __p9k_intro="$__p9k_intro_no_locale; $__p9k_intro_locale"
