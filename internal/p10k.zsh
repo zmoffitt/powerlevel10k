@@ -5259,7 +5259,10 @@ function instant_prompt_nix_shell() {
 function prompt_terraform() {
   local ws=$TF_WORKSPACE
   if [[ -z $TF_WORKSPACE ]]; then
-    _p9k_read_word ${${TF_DATA_DIR:-.terraform}:A}/environment && ws=$_p9k__ret
+    # Avoid :A on a relative path: it calls getcwd(), which can hang on a wedged mount.
+    local dir=${TF_DATA_DIR:-.terraform}
+    [[ $dir == /* ]] || dir=$_p9k__cwd_a/$dir
+    _p9k_read_word $dir/environment && ws=$_p9k__ret
   fi
   [[ -z $ws || $ws == default && $_POWERLEVEL9K_TERRAFORM_SHOW_DEFAULT == 0 ]] && return
   local pat class state
@@ -5269,7 +5272,7 @@ function prompt_terraform() {
       break
     fi
   done
-  _p9k_prompt_segment "$0$state" $_p9k_color1 blue TERRAFORM_ICON 0 '' $ws
+  _p9k_prompt_segment "$0$state" $_p9k_color1 blue TERRAFORM_ICON 0 '' "${(V)ws//\%/%%}"
 }
 
 _p9k_prompt_terraform_init() {
@@ -5279,7 +5282,9 @@ _p9k_prompt_terraform_init() {
 function prompt_terraform_version() {
   local v cfg terraform=${commands[terraform]}
   _p9k_upglob .terraform-version -. || cfg=$_p9k__parent_dirs[$?]/.terraform-version
-  if _p9k_cache_stat_get $0.$TFENV_TERRAFORM_VERSION $terraform $cfg; then
+  # tfenv's global version file (`tfenv use`); missing files are harmless in the stat list.
+  local tfenv_ver=${TFENV_CONFIG_DIR:-${TFENV_ROOT:-${terraform:A:h:h}}}/version
+  if _p9k_cache_stat_get $0.$TFENV_TERRAFORM_VERSION $terraform $cfg $tfenv_ver; then
     v=$_p9k__cache_val[1]
   else
     v=${${"$(terraform --version 2>/dev/null)"#Terraform v}%%$'\n'*} || v=
@@ -5379,7 +5384,9 @@ function prompt_timewarrior() {
   _p9k_timewarrior_file_mtime=$stat[2]
   { local tail=${${(Af)"$(<$_p9k_timewarrior_file_name)"}[-1]} } 2>/dev/null
   if [[ $tail == (#b)'inc '[^\ ]##(|\ #\#(*)) ]]; then
-    _p9k_timewarrior_tags=${${match[2]## #}%% #}
+    # Drop the annotation: `inc <start> # <tags> # "<annotation>"`.
+    _p9k_timewarrior_tags=${${${match[2]%%\#\ \"*}## #}%% #}
+    [[ $_p9k_timewarrior_tags == '#' ]] && _p9k_timewarrior_tags=
     _p9k_prompt_segment $0 grey 255 TIMEWARRIOR_ICON 0 '' "${_p9k_timewarrior_tags//\%/%%}"
   else
     unset _p9k_timewarrior_tags
@@ -5398,7 +5405,7 @@ function _p9k_taskwarrior_check_meta() {
   if (( $#_p9k_taskwarrior_meta_files )); then
     zstat -A stat +mtime -- $_p9k_taskwarrior_meta_files 2>/dev/null || return
   fi
-  [[ $_p9k_taskwarrior_meta_sig == ${(pj:\0:)stat}$'\0'$TASKRC$'\0'$TASKDATA ]] || return
+  [[ $_p9k_taskwarrior_meta_sig == ${(pj:\0:)stat}$'\0'$TASKRC$'\0'$TASKDATA$'\0'$XDG_CONFIG_HOME ]] || return
 }
 
 function _p9k_taskwarrior_init_meta() {
@@ -5412,12 +5419,14 @@ function _p9k_taskwarrior_init_meta() {
     : ${dir::=$~dir}  # `task` can give us path with `~`` in it; expand it
 
     local -a stat files=(${TASKRC:-~/.taskrc})
+    # Taskwarrior 2.6+ falls back to the XDG taskrc when ~/.taskrc is missing.
+    [[ -n $TASKRC ]] || files+=(${XDG_CONFIG_HOME:-~/.config}/task/taskrc)
     _p9k_taskwarrior_meta_files=($^files(N))
     _p9k_taskwarrior_meta_non_files=(${files:|_p9k_taskwarrior_meta_files})
     if (( $#_p9k_taskwarrior_meta_files )); then
       zstat -A stat +mtime -- $_p9k_taskwarrior_meta_files 2>/dev/null || stat=(-1)
     fi
-    _p9k_taskwarrior_meta_sig=${(pj:\0:)stat}$'\0'$TASKRC$'\0'$TASKDATA
+    _p9k_taskwarrior_meta_sig=${(pj:\0:)stat}$'\0'$TASKRC$'\0'$TASKDATA$'\0'$XDG_CONFIG_HOME
     _p9k_taskwarrior_data_dir=$dir
   } always {
     if (( $? == 0 )); then
@@ -5440,7 +5449,7 @@ function _p9k_taskwarrior_check_data() {
   if (( $#_p9k_taskwarrior_data_files )); then
     zstat -A stat +mtime -- $_p9k_taskwarrior_data_files 2>/dev/null || return
   fi
-  [[ $_p9k_taskwarrior_data_sig == ${(pj:\0:)stat}$'\0'$TASKRC$'\0'$TASKDATA ]] || return
+  [[ $_p9k_taskwarrior_data_sig == ${(pj:\0:)stat}$'\0'$TASKRC$'\0'$TASKDATA$'\0'$XDG_CONFIG_HOME ]] || return
   (( _p9k_taskwarrior_next_due == 0 || _p9k_taskwarrior_next_due > EPOCHSECONDS )) || return
 }
 
@@ -5459,7 +5468,7 @@ function _p9k_taskwarrior_init_data() {
   if (( $#_p9k_taskwarrior_data_files )); then
     zstat -A stat +mtime -- $_p9k_taskwarrior_data_files 2>/dev/null || stat=(-1)
   fi
-  _p9k_taskwarrior_data_sig=${(pj:\0:)stat}$'\0'$TASKRC$'\0'$TASKDATA
+  _p9k_taskwarrior_data_sig=${(pj:\0:)stat}$'\0'$TASKRC$'\0'$TASKDATA$'\0'$XDG_CONFIG_HOME
 
   local name val
   for name in PENDING OVERDUE; do
@@ -5524,6 +5533,7 @@ prompt_wifi() {
 
 _p9k_prompt_wifi_init() {
   if [[ -x /System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport ||
+        $_p9k_os == OSX && -n $commands[osascript] ||
         -r /proc/net/wireless && -n $commands[iw] ]]; then
     typeset -g _p9k__wifi_on=
     typeset -g P9K_WIFI_LAST_TX_RATE=
@@ -5546,19 +5556,52 @@ _p9k_prompt_wifi_async() {
   local airport=/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport
   local last_tx_rate ssid link_auth rssi noise bars on out line v state iface
   {
-    if [[ -x $airport ]]; then
-      out="$($airport -I)" || return 0
-      for line in ${${${(f)out}##[[:space:]]#}%%[[:space:]]#}; do
-        v=${line#*: }
-        case $line[1,-$#v-3] in
-          agrCtlRSSI)  rssi=$v;;
-          agrCtlNoise) noise=$v;;
-          state)       state=$v;;
-          lastTxRate)  last_tx_rate=$v;;
-          link\ auth)  link_auth=$v;;
-          SSID)        ssid=$v;;
+    if [[ -x $airport || $_p9k_os == OSX && -n $commands[osascript] ]]; then
+      if [[ -x $airport ]] && out="$($airport -I 2>/dev/null)"; then
+        for line in ${${${(f)out}##[[:space:]]#}%%[[:space:]]#}; do
+          v=${line#*: }
+          case $line[1,-$#v-3] in
+            agrCtlRSSI)  rssi=$v;;
+            agrCtlNoise) noise=$v;;
+            state)       state=$v;;
+            lastTxRate)  last_tx_rate=$v;;
+            link\ auth)  link_auth=$v;;
+            SSID)        ssid=$v;;
+          esac
+        done
+      fi
+      # airport is a stub since macOS 14.4 and was removed later. Fall back to CoreWLAN.
+      # SSID is empty unless the terminal has Location Services permission.
+      if [[ -z $state && -n $commands[osascript] ]]; then
+        out="$(command osascript -l JavaScript -e '
+          ObjC.import("CoreWLAN")
+          var i = $.CWWiFiClient.sharedWiFiClient.interface
+          !i || !i.powerOn ? "" : [i.rssiValue, i.noiseMeasurement, i.transmitRate,
+                                  i.security, ObjC.unwrap(i.ssid) || ""].join("\n")' 2>/dev/null)" || return 0
+        local -a fields=("${(@f)out}")
+        (( $#fields >= 4 )) || return 0
+        rssi=$fields[1]
+        noise=$fields[2]
+        last_tx_rate=$fields[3]
+        ssid=$fields[5]
+        [[ $last_tx_rate == <->.<-> ]] && last_tx_rate=${${last_tx_rate%%0#}%.}
+        # CWSecurity, mapped to the strings airport used to print.
+        case $fields[4] in
+          0)    link_auth=none;;
+          1|6)  link_auth=wep;;
+          2|3)  link_auth=wpa-psk;;
+          4|5)  link_auth=wpa2-psk;;
+          7|8)  link_auth=wpa;;
+          9|10) link_auth=wpa2;;
+          11)   link_auth=wpa3-sae;;
+          12)   link_auth=wpa3;;
+          13)   link_auth=wpa3-transition;;
+          14)   link_auth=owe;;
+          15)   link_auth=owe-transition;;
+          *)    link_auth=;;
         esac
-      done
+        [[ $rssi == -<1-> && $last_tx_rate == <->(|.<->) ]] && state=running
+      fi
       [[ $state == running && $rssi == (0|-<->) && $noise == (0|-<->) ]] || return 0
     elif [[ -r /proc/net/wireless && -n $commands[iw] ]]; then
       # Content example (https://github.com/romkatv/powerlevel10k/pull/973#issuecomment-680251804):
@@ -5574,7 +5617,9 @@ _p9k_prompt_wifi_async() {
       state=${parts[2]}
       rssi=${parts[4]%.*}
       noise=${parts[5]%.*}
-      [[ -n $iface && $state == 0## && $rssi == (0|-<->) && $noise == (0|-<->) ]] || return 0
+      # cfg80211 drivers report -256 when noise is not available.
+      [[ $noise == -<256-> ]] && noise=
+      [[ -n $iface && $state == 0## && $rssi == (0|-<->) && $noise == (|0|-<->) ]] || return 0
       # Output example (https://github.com/romkatv/powerlevel10k/pull/973#issuecomment-680251804):
       #
       # Connected to 74:83:c2:be:76:da (on wlp3s0)
@@ -5605,7 +5650,12 @@ _p9k_prompt_wifi_async() {
     fi
     # https://www.speedguide.net/faq/how-to-read-rssisignal-and-snrnoise-ratings-440
     # http://www.wireless-nets.com/resources/tutorials/define_SNR_values.html
-    local -i snr_margin='rssi - noise'
+    local -i snr_margin
+    if [[ -n $noise ]]; then
+      snr_margin='rssi - noise'
+    else
+      snr_margin='rssi + 90'  # unknown noise: assume a -90 dBm noise floor
+    fi
     if (( snr_margin >= 40 )); then
       bars=4
     elif (( snr_margin >= 25 )); then
@@ -5668,7 +5718,7 @@ function _p9k_asdf_check_meta() {
   if (( $#_p9k_asdf_meta_files )); then
     zstat -A stat +mtime -- $_p9k_asdf_meta_files 2>/dev/null || return
   fi
-  [[ $_p9k_asdf_meta_sig == $ASDF_CONFIG_FILE$'\0'$ASDF_DATA_DIR$'\0'${(pj:\0:)stat} ]] || return
+  [[ $_p9k_asdf_meta_sig == $ASDF_CONFIG_FILE$'\0'$ASDF_DATA_DIR$'\0'$ASDF_DEFAULT_TOOL_VERSIONS_FILENAME$'\0'${(pj:\0:)stat} ]] || return
 }
 
 function _p9k_asdf_init_meta() {
@@ -5676,6 +5726,10 @@ function _p9k_asdf_init_meta() {
   {
     local -a files
     local -i legacy_enabled
+    # Per-directory version file name. asdf also accepts a path; then .tool-versions is used per
+    # directory and the path is read as a fallback (see prompt_asdf).
+    local tv=${ASDF_DEFAULT_TOOL_VERSIONS_FILENAME:-.tool-versions}
+    [[ $tv == */* ]] && tv=.tool-versions
 
     _p9k_asdf_plugins=()
     _p9k_asdf_file_info=()
@@ -5722,7 +5776,7 @@ function _p9k_asdf_init_meta() {
             [[ -x $parse ]] && has_parse=1
             local name
             for name in ${$($list_names 2>/dev/null)%$'\r'}; do
-              [[ $name == (*/*|.tool-versions) ]] && continue
+              [[ $name == (*/*|$tv) ]] && continue
               _p9k_asdf_file_info[$name]+="${plugin:t} $has_parse "
             done
           fi
@@ -5737,7 +5791,7 @@ function _p9k_asdf_init_meta() {
     if (( $#_p9k_asdf_meta_files )); then
       zstat -A stat +mtime -- $_p9k_asdf_meta_files 2>/dev/null || return
     fi
-    _p9k_asdf_meta_sig=$ASDF_CONFIG_FILE$'\0'$ASDF_DATA_DIR$'\0'${(pj:\0:)stat}
+    _p9k_asdf_meta_sig=$ASDF_CONFIG_FILE$'\0'$ASDF_DATA_DIR$'\0'$ASDF_DEFAULT_TOOL_VERSIONS_FILENAME$'\0'${(pj:\0:)stat}
     _p9k__asdf_dir2files=()
     _p9k_asdf_file2versions=()
   } always {
@@ -5816,6 +5870,8 @@ function prompt_asdf() {
   local -A versions
   local -a stat
   local -i has_global
+  local tv=${ASDF_DEFAULT_TOOL_VERSIONS_FILENAME:-.tool-versions}
+  [[ $tv == */* ]] && tv=.tool-versions
   local dirs=($_p9k__parent_dirs)
   local mtimes=($_p9k__parent_mtimes)
   if [[ $dirs[-1] != ~ ]]; then
@@ -5829,7 +5885,7 @@ function prompt_asdf() {
     if [[ $elem == *:* ]]; then
       local dir=$dirs[${elem%%:*}]
       zstat -A stat +mtime $dir 2>/dev/null || return
-      local files=($dir/.tool-versions(N) $dir/${(k)^_p9k_asdf_file_info}(N))
+      local files=($dir/$tv(N) $dir/${(k)^_p9k_asdf_file_info}(N))
       _p9k__asdf_dir2files[$dir]=$stat[1]:${(pj:\0:)files}
     else
       local files=(${(0)elem})
@@ -5841,7 +5897,7 @@ function prompt_asdf() {
     fi
     local file
     for file in $files; do
-      [[ $file == */.tool-versions ]]
+      [[ $file == */$tv ]]
       _p9k_asdf_parse_version_file $file $? || return
     done
   done
@@ -5852,7 +5908,7 @@ function prompt_asdf() {
     versions=()
   fi
 
-  if [[ -r $ASDF_DEFAULT_TOOL_VERSIONS_FILENAME ]]; then
+  if [[ $ASDF_DEFAULT_TOOL_VERSIONS_FILENAME == */* && -r $ASDF_DEFAULT_TOOL_VERSIONS_FILENAME ]]; then
     _p9k_asdf_parse_version_file $ASDF_DEFAULT_TOOL_VERSIONS_FILENAME 0 || return
   fi
 
@@ -5904,36 +5960,73 @@ _p9k_prompt_asdf_init() {
   typeset -g "_p9k__segment_cond_${_p9k__prompt_side}[_p9k__segment_index]"='${commands[asdf]:-${${+functions[asdf]}:#0}}'
 }
 
+# Usage: _p9k_haskell_stack_version <stack.yaml> <slot>
+#
+# Sets _p9k__ret to the cached compiler version. On a cache miss sets _p9k__ret to empty, returns 1
+# and asks the worker to compute the version: `stack` takes seconds and can regenerate *.cabal
+# files with hpack, so it must not run in the prompt path. <slot> names the worker request.
 _p9k_haskell_stack_version() {
-  if ! _p9k_cache_stat_get $0 $1 ${STACK_ROOT:-~/.stack}/{pantry/pantry.sqlite3,stack.sqlite3}; then
-    local v
-    v="$(STACK_YAML=$1 stack \
-      --silent                 \
-      --no-install-ghc         \
-      --skip-ghc-check         \
-      --no-terminal            \
-      --color=never            \
-      --lock-file=read-only    \
-      query compiler actual)" || v=
-    _p9k_cache_stat_set "$v"
+  if _p9k_cache_stat_get $0 $1 ${STACK_ROOT:-~/.stack}/{pantry/pantry.sqlite3,stack.sqlite3}; then
+    _p9k__ret=$_p9k__cache_val[1]
+  else
+    _p9k__ret=
+    _p9k_worker_invoke haskell_stack_$2 "_p9k_prompt_haskell_stack_compute ${(q)1} ${(q)_p9k__cwd_a}"
+    return 1
   fi
-  _p9k__ret=$_p9k__cache_val[1]
+}
+
+_p9k_prompt_haskell_stack_compute() {
+  _p9k_worker_async "_p9k_prompt_haskell_stack_async ${(q)1} ${(q)2}" _p9k_prompt_haskell_stack_sync
+}
+
+_p9k_prompt_haskell_stack_async() {
+  local yaml=$1 cwd=$2 v
+  if pushd -q -- $cwd; then
+    {
+      v="$(STACK_YAML=$yaml stack \
+        --silent                 \
+        --no-install-ghc         \
+        --skip-ghc-check         \
+        --no-terminal            \
+        --color=never            \
+        --lock-file=read-only    \
+        query compiler actual 2>/dev/null)" || v=
+    } always {
+      popd -q
+    }
+  fi
+  # \x05 and \x1e delimit worker messages.
+  v=${v//[$'\x05\x1e']}
+  echo -E - "_p9k_haskell_stack_store ${(qq)yaml} ${(qq)v} && reset=2"
+}
+
+_p9k_prompt_haskell_stack_sync() {
+  [[ -n $REPLY ]] && _p9k_worker_reply $REPLY
+}
+
+# Runs in the main shell with the version computed by _p9k_prompt_haskell_stack_async.
+# Returns 0 if the cache was updated.
+_p9k_haskell_stack_store() {
+  _p9k_cache_stat_get _p9k_haskell_stack_version $1 \
+    ${STACK_ROOT:-~/.stack}/{pantry/pantry.sqlite3,stack.sqlite3} && return 1
+  [[ -n $_p9k__cache_stat_fprint ]] || return
+  _p9k_cache_stat_set "$2"
 }
 
 prompt_haskell_stack() {
   if [[ -n $STACK_YAML ]]; then
     (( ${_POWERLEVEL9K_HASKELL_STACK_SOURCES[(I)shell]} )) || return
-    _p9k_haskell_stack_version $STACK_YAML
+    _p9k_haskell_stack_version $STACK_YAML project
   else
     (( ${_POWERLEVEL9K_HASKELL_STACK_SOURCES[(I)local|global]} )) || return
     if _p9k_upglob stack.yaml -.; then
       (( _POWERLEVEL9K_HASKELL_STACK_PROMPT_ALWAYS_SHOW )) || return
       (( ${_POWERLEVEL9K_HASKELL_STACK_SOURCES[(I)global]} )) || return
-      _p9k_haskell_stack_version ${STACK_ROOT:-~/.stack}/global-project/stack.yaml
+      _p9k_haskell_stack_version ${STACK_ROOT:-~/.stack}/global-project/stack.yaml global
     else
       local -i idx=$?
       (( ${_POWERLEVEL9K_HASKELL_STACK_SOURCES[(I)local]} )) || return
-      _p9k_haskell_stack_version $_p9k__parent_dirs[idx]/stack.yaml
+      _p9k_haskell_stack_version $_p9k__parent_dirs[idx]/stack.yaml project
     fi
   fi
 
@@ -5942,7 +6035,7 @@ prompt_haskell_stack() {
   local v=$_p9k__ret
 
   if (( !_POWERLEVEL9K_HASKELL_STACK_PROMPT_ALWAYS_SHOW )); then
-    _p9k_haskell_stack_version ${STACK_ROOT:-~/.stack}/global-project/stack.yaml
+    _p9k_haskell_stack_version ${STACK_ROOT:-~/.stack}/global-project/stack.yaml global || return
     [[ $v == $_p9k__ret ]] && return
   fi
 
@@ -5950,6 +6043,8 @@ prompt_haskell_stack() {
 }
 
 _p9k_prompt_haskell_stack_init() {
+  # Requests are sent from prompt_haskell_stack; this only makes sure the worker is started.
+  _p9k__async_segments_compute+=':'
   typeset -g "_p9k__segment_cond_${_p9k__prompt_side}[_p9k__segment_index]"='$commands[stack]'
 }
 
@@ -5980,13 +6075,14 @@ prompt_cpu_arch() {
     _p9k_cache_ephemeral_set "$state" "$text"
   fi
   if [[ -n $text ]]; then
-    _p9k_prompt_segment "$0$state" "yellow" "$_p9k_color1" 'ARCH_ICON' 0 '' "$text"
+    _p9k_prompt_segment "$0$state" "yellow" "$_p9k_color1" 'ARCH_ICON' 0 '' "${(V)text//\%/%%}"
   fi
 
   (( _p9k__has_upglob )) || typeset -g "_p9k__segment_val_${_p9k__prompt_side}[_p9k__segment_index]"=$_p9k__prompt[len+1,-1]
 }
 
 _p9k_prompt_cpu_arch_init() {
+  [[ -r /proc/sys/kernel/arch ]] && return
   typeset -g "_p9k__segment_cond_${_p9k__prompt_side}[_p9k__segment_index]"='$commands[machine]$commands[arch]'
 }
 
