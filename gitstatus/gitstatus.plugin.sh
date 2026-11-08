@@ -41,8 +41,8 @@
 #             for a repo that's been closed is much slower than for a repo that hasn't been.
 #             Negative value means infinity. The default is 3600 (one hour).
 function gitstatus_start() {
-  if [[ "$BASH_VERSION" < 4 ]]; then
-    >&2 printf 'gitstatus_start: need bash version >= 4.0, found %s\n' "$BASH_VERSION"
+  if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 1) )); then
+    >&2 printf 'gitstatus_start: need bash version >= 4.1, found %s\n' "$BASH_VERSION"
     >&2 printf '\n'
     >&2 printf 'To see the version of the current shell, type:\n'
     >&2 printf '\n'
@@ -74,7 +74,14 @@ function gitstatus_start() {
 
   (( OPTIND == $# + 1 )) || { echo "usage: gitstatus_start [OPTION]..." >&2; return 1; }
 
-  [[ -z "${GITSTATUS_DAEMON_PID:-}" ]] || return 0  # already started
+  if [[ -n "${GITSTATUS_DAEMON_PID:-}" ]]; then
+    if [[ "${_GITSTATUS_CLIENT_PID:-}" == "$BASHPID" || "${_GITSTATUS_CLIENT_PID:-}" == "$$" ]]; then
+      return 0  # already started
+    fi
+    # Exported by the parent shell; we don't have its file descriptors.
+    unset _GITSTATUS_REQ_FD _GITSTATUS_RESP_FD GITSTATUS_DAEMON_PID
+    unset _GITSTATUS_DIRTY_MAX_INDEX_SIZE _GITSTATUS_CLIENT_PID
+  fi
 
   if [[ "${BASH_SOURCE[0]}" == */* ]]; then
     local gitstatus_plugin_dir="${BASH_SOURCE[0]%/*}"
@@ -121,10 +128,10 @@ function gitstatus_start() {
       --repo-ttl-seconds="$ttl"
       $extra_flags)
 
-    if [[ -n "$TMPDIR" && ( ( -d "$TMPDIR" && -w "$TMPDIR" ) || ! ( -d /tmp && -w /tmp ) ) ]]; then
-      local tmpdir=$TMPDIR
+    if [[ -n "${TMPDIR:-}" && ( ( -d "$TMPDIR" && -w "$TMPDIR" ) || ! ( -d /tmp && -w /tmp ) ) ]]; then
+      tmpdir=$TMPDIR
     else
-      local tmpdir=/tmp
+      tmpdir=/tmp
     fi
     tmpdir="$(command mktemp -d "$tmpdir"/gitstatus.bash.$$.XXXXXXXXXX)" || return
 
@@ -270,6 +277,8 @@ function gitstatus_start() {
     fi
     [[ -z "${req_fifo:-}"  ]] || command rm -f "$req_fifo"
     [[ -z "${resp_fifo:-}" ]] || command rm -f "$resp_fifo"
+    [[ -z "${tmpdir:-}" || "${GITSTATUS_DAEMON_LOG:-}" != /dev/null ]] ||
+      command rmdir -- "$tmpdir" 2>/dev/null
     unset -f gitstatus_start_impl
     gitstatus_stop
     return 1
@@ -361,7 +370,7 @@ function gitstatus_stop() {
 function gitstatus_query() {
   unset OPTIND
   local opt dir= timeout=() no_diff=0
-  while getopts "d:c:t:p" opt "$@"; do
+  while getopts "d:t:p" opt "$@"; do
     case "$opt" in
       d) dir=$OPTARG;;
       t) timeout=(-t "$OPTARG");;
@@ -372,24 +381,46 @@ function gitstatus_query() {
   (( OPTIND == $# + 1 )) || { echo "usage: gitstatus_query [OPTION]..." >&2; return 1; }
 
   [[ -n "${GITSTATUS_DAEMON_PID-}" ]] || return  # not started
+  # Inherited from the parent shell without the file descriptors.
+  [[ "${_GITSTATUS_CLIENT_PID:-}" == "$BASHPID" || "${_GITSTATUS_CLIENT_PID:-}" == "$$" ]] || return
 
   local req_id="$RANDOM.$RANDOM.$RANDOM.$RANDOM"
+  # $(pwd -P) forks and strips trailing newlines from the directory name. Avoid it if possible.
   if [[ -z "${GIT_DIR:-}" ]]; then
-    [[ "$dir" == /* ]] || dir="$(pwd -P)/$dir" || return
+    if [[ "$dir" != /* ]]; then
+      if [[ "$PWD" == /* && "$PWD" -ef . ]]; then
+        dir="$PWD/$dir"
+      else
+        dir="$(pwd -P)/$dir" || return
+      fi
+    fi
   elif [[ "$GIT_DIR" == /* ]]; then
     dir=:"$GIT_DIR"
+  elif [[ "$PWD" == /* && "$PWD" -ef . ]]; then
+    dir=:"$PWD/$GIT_DIR"
   else
     dir=:"$(pwd -P)/$GIT_DIR" || return
   fi
-  echo -nE "$req_id"$'\x1f'"$dir"$'\x1f'"$no_diff"$'\x1e' >&$_GITSTATUS_REQ_FD || return
 
-  local -a resp
-  while true; do
-    IFS=$'\x1f' read -rd $'\x1e' -a resp -u $_GITSTATUS_RESP_FD "${timeout[@]}" || return
-    [[ "${resp[0]}" == "$req_id" ]] && break
-  done
+  local -a resp=()
+  # gitstatusd silently drops requests whose directory contains the separators; report norepo.
+  if [[ "$dir" != *[$'\x1e\x1f']* ]]; then
+    # Writing to the request FIFO after the daemon has exited would kill us with SIGPIPE.
+    kill -0 "$GITSTATUS_DAEMON_PID" 2>/dev/null || { gitstatus_stop; return 1; }
+    echo -nE "$req_id"$'\x1f'"$dir"$'\x1f'"$no_diff"$'\x1e' >&$_GITSTATUS_REQ_FD || return
 
-  if [[ "${resp[1]}" == 1 ]]; then
+    while true; do
+      IFS=$'\x1f' read -rd $'\x1e' -a resp -u $_GITSTATUS_RESP_FD ${timeout[@]+"${timeout[@]}"} || {
+        local ret=$?
+        (( ret > 128 )) || gitstatus_stop  # >128 is a timeout; otherwise the daemon is gone
+        return $ret
+      }
+      [[ "${resp[0]-}" == "$req_id" ]] && break
+      [[ "${resp[0]-}" != "}bye" ]] || { gitstatus_stop; return 1; }
+    done
+  fi
+
+  if [[ "${resp[1]-}" == 1 ]]; then
     VCS_STATUS_RESULT=ok-sync
     VCS_STATUS_WORKDIR="${resp[2]}"
     VCS_STATUS_COMMIT="${resp[3]}"
@@ -470,5 +501,6 @@ function gitstatus_query() {
 # Returns 0 if and only if gitstatus_start has succeeded previously.
 # If it returns non-zero, gitstatus_query is guaranteed to return non-zero.
 function gitstatus_check() {
-  [[ -n "$GITSTATUS_DAEMON_PID" ]]
+  [[ -n "${GITSTATUS_DAEMON_PID:-}" ]] &&
+    [[ "${_GITSTATUS_CLIENT_PID:-}" == "$BASHPID" || "${_GITSTATUS_CLIENT_PID:-}" == "$$" ]]
 }

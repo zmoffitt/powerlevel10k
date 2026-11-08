@@ -3,7 +3,7 @@
 # Source gitstatus.plugin.sh from $GITSTATUS_DIR or from the same directory
 # in which the current script resides if the variable isn't set.
 if [[ -n "${GITSTATUS_DIR-}" ]]; then
-  source "$GITSTATUS_DIR"                           || return
+  source "$GITSTATUS_DIR"/gitstatus.plugin.sh       || return
 elif [[ "${BASH_SOURCE[0]}" == */* ]]; then
   source "${BASH_SOURCE[0]%/*}/gitstatus.plugin.sh" || return
 else
@@ -85,12 +85,14 @@ function gitstatus_prompt_update() {
 gitstatus_stop && gitstatus_start -s -1 -u -1 -c -1 -d -1
 
 # On every prompt, fetch git status and set GITSTATUS_PROMPT.
-if [[ -z "${PROMPT_COMMAND[*]}" ]]; then
+_gitstatus_prompt_re='(^|[[:space:];])gitstatus_prompt_update($|[[:space:];])'
+if [[ -z "${PROMPT_COMMAND[*]-}" ]]; then
   PROMPT_COMMAND=gitstatus_prompt_update
-elif [[ ! "${PROMPT_COMMAND[*]}" =~ [[:space:]\;]?gitstatus_prompt_update[[:space:]\;]? ]]; then
+elif [[ ! "${PROMPT_COMMAND[*]-}" =~ $_gitstatus_prompt_re ]]; then
   # Note: If PROMPT_COMMAND is an array, this will modify its first element.
-  PROMPT_COMMAND=$'gitstatus_prompt_update\n'"$PROMPT_COMMAND"
+  PROMPT_COMMAND=$'gitstatus_prompt_update\n'"${PROMPT_COMMAND-}"
 fi
+unset _gitstatus_prompt_re
 
 # Retain 3 trailing components of the current directory.
 PROMPT_DIRTRIM=3
