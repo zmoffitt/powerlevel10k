@@ -9255,11 +9255,13 @@ _p9k_init() {
   if (( _p9k__instant_prompt_disabled )); then
     (( _POWERLEVEL9K_DISABLE_INSTANT_PROMPT )) && unset __p9k_instant_prompt_erased
     _p9k_delete_instant_prompt
+    _p9k_delete_old_instant_prompt
     _p9k_dumped_instant_prompt_sigs=()
   fi
 
   if (( $+__p9k_instant_prompt_sourced && __p9k_instant_prompt_sourced != __p9k_instant_prompt_version )); then
     _p9k_delete_instant_prompt
+    _p9k_delete_old_instant_prompt
     _p9k_dumped_instant_prompt_sigs=()
   fi
 
@@ -9317,6 +9319,7 @@ _p9k_init() {
 
 _p9k_deinit() {
   (( $+functions[_p9k_preinit] )) && unfunction _p9k_preinit
+  (( $+functions[_p9k_async_segments_compute] )) && unfunction _p9k_async_segments_compute
   (( $+functions[gitstatus_stop_p9k_] )) && gitstatus_stop_p9k_ POWERLEVEL9K
   _p9k_worker_stop
   if (( _p9k__state_dump_fd )); then
@@ -9375,6 +9378,12 @@ _p9k_setup() {
   __p9k_enabled=1
   typeset -ga preexec_functions=(_p9k_preexec1 $preexec_functions _p9k_preexec2)
   typeset -ga precmd_functions=(_p9k_do_nothing _p9k_precmd_first $precmd_functions _p9k_precmd)
+  # Let promptinit remove our hooks when the user switches to another theme with `prompt`.
+  # This fails when no promptinit theme is active, which is fine. `prompt -p` runs cleanup in
+  # a subshell; tearing down there would kill the parent's gitstatusd and worker.
+  (( $+functions[prompt_cleanup] )) &&
+    prompt_cleanup '(( ZSH_SUBSHELL )) || prompt_powerlevel9k_teardown' 2>/dev/null
+  return 0
 }
 
 prompt_powerlevel9k_setup() {
@@ -9425,8 +9434,9 @@ Options:
   -b bg     background color; for example, 'blue', '4', or '#0000ff'; empty value means
             transparent background, as in '%%k'; default is black
   -f fg     foreground color; for example, 'blue', '4', or '#0000ff'; empty value means
-            default foreground color, as in '%%f'; default is empty
-  -s state  segment's state for the purpose of applying styling options; if you want to
+            the theme's default foreground color (black with dark COLOR_SCHEME, white
+            with light); default is empty
+  -s state  segment's state for the purpose of applying styling options; if you want
             to be able to use POWERLEVEL9K parameters to specify different colors or icons
             depending on some property, use different states for different values of that
             property
@@ -9471,7 +9481,7 @@ Example customizations:
   POWERLEVEL9K_CORE_FOREGROUND=red
 
   # Override foreground when DELETABLE.
-  POWERLEVEL9K_CORE_DELETABLE_BACKGROUND=green
+  POWERLEVEL9K_CORE_DELETABLE_FOREGROUND=green
 
   # Override icon when PROTECTED.
   POWERLEVEL9K_CORE_PROTECTED_VISUAL_IDENTIFIER_EXPANSION='❎'
@@ -9595,9 +9605,9 @@ function p10k() {
       if [[ -z $_p9k__prompt_side ]]; then
         print -rP -- "%1F[ERROR]%f %Bp10k segment%b: can be called only during prompt rendering." >&2
         if (( !ARGC )); then
-          print -rP -- ""
+          print -rP -- "" >&2
           print -rP -- "For help, type:" >&2
-          print -rP -- ""
+          print -rP -- "" >&2
           print -rP -- "  %2Fp10k%f %Bhelp%b %Bsegment%b" >&2
         fi
         return 1
@@ -9636,7 +9646,7 @@ function p10k() {
         (( ARGC )) || set -- '*'
         for opt; do
           for k in ${(u@)_p9k_display_k[(I)$opt]:/(#m)*/$_p9k_display_k[$MATCH]}; do
-            reply+=($_p9k__display_v[k,k+1])
+            reply+=("${(@)_p9k__display_v[k,k+1]}")
           done
         done
         if (( __p9k_reset_state == -1 )); then
@@ -9644,6 +9654,14 @@ function p10k() {
         fi
         return 0
       fi
+      for opt in "${@:$OPTIND}"; do
+        pair=(${(s:=:)opt})
+        list=(${(s:,:)${pair[2]}})
+        if (( ! $#list )); then
+          print -rP -- $__p9k_p10k_display_usage >&2
+          return 1
+        fi
+      done
       local REPLY
       local -a reply
       for opt in "${@:$OPTIND}"; do
@@ -9738,6 +9756,16 @@ function p10k-instant-prompt-finalize() {
   (( ${+__p9k_instant_prompt_active} )) && unsetopt prompt_cr prompt_sp || setopt prompt_cr prompt_sp
 }
 
+# Instant prompt is sourced from ${XDG_CACHE_HOME:-~/.cache} as it was when the .zshrc preamble
+# ran. If XDG_CACHE_HOME has changed since then, _p9k_delete_instant_prompt misses those files.
+function _p9k_delete_old_instant_prompt() {
+  [[ -n $__p9k_instant_prompt_dump_file ]] || return 0
+  local root_dir=${__p9k_instant_prompt_dump_file:h}
+  [[ $root_dir == /* && $root_dir != ${__p9k_dump_file:h} ]] || return 0
+  local user=${(%):-%n}
+  zf_rm -f -- $root_dir/p10k-instant-prompt-$user.zsh{,.zwc} $root_dir/p10k-$user/prompt-*(N) 2>/dev/null
+}
+
 autoload -Uz add-zsh-hook
 
 zmodload zsh/datetime
@@ -9753,6 +9781,7 @@ zmodload -F zsh/files b:zf_chmod b:zf_mkdir b:zf_mv b:zf_rm
 
 if [[ $__p9k_dump_file != $__p9k_instant_prompt_dump_file && -n $__p9k_instant_prompt_dump_file ]]; then
   _p9k_delete_instant_prompt
+  _p9k_delete_old_instant_prompt
   zf_rm -f -- $__p9k_dump_file{,.zwc} 2>/dev/null
   zf_rm -f -- $__p9k_instant_prompt_dump_file{,.zwc} 2>/dev/null
 fi
