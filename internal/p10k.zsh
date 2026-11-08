@@ -1865,7 +1865,7 @@ prompt_dir() {
         local -i i=$#parts
         local dir=$_p9k__cwd
         for (( ; i > 0; --i )); do
-          local markers=($dir/${~pats}(N))
+          local markers=($dir/${~pats}(N-.))
           if (( $#markers )); then
             local pat= pkg_file=
             for pat in $_POWERLEVEL9K_DIR_PACKAGE_FILES; do
@@ -1874,7 +1874,7 @@ prompt_dir() {
                 if ! _p9k_cache_stat_get $0_pkg $pkg_file; then
                   local pkg_name=''
                   pkg_name="$(jq -j '.name | select(. != null)' <$pkg_file 2>/dev/null)" || pkg_name=''
-                  _p9k_cache_stat_set "$pkg_name"
+                  _p9k_cache_stat_set "${(V)pkg_name}"
                 fi
                 [[ -n $_p9k__cache_val[1] ]] || continue
                 parts[1,i]=($_p9k__cache_val[1])
@@ -1922,8 +1922,15 @@ prompt_dir() {
       delim=${_POWERLEVEL9K_SHORTEN_DELIMITER-'*'}
       shortenlen=${_POWERLEVEL9K_SHORTEN_DIR_LENGTH:-1}
       (( shortenlen >= 0 )) || shortenlen=1
-      local rp=${(g:oce:)p}
-      local rparts=("${(@s:/:)rp}")
+      # Raw names of the directories in parts. They cannot be decoded from p because a literal
+      # '^' or '\' in a name is indistinguishable from the escapes added by (V), so take them
+      # from the end of $_p9k__cwd instead.
+      local rparts=("${(@s:/:)_p9k__cwd}")
+      if (( $#parts > 1 )); then
+        rparts=("$parts[1]" "${(@)rparts[2-$#parts,-1]}")
+      else
+        rparts=("$parts[1]")
+      fi
 
       local -i i=2 e=$(($#parts - shortenlen))
       if [[ -n $_POWERLEVEL9K_DIR_TRUNCATE_BEFORE_MARKER ]]; then
@@ -2011,7 +2018,7 @@ prompt_dir() {
             parts[2]="\${(Q)\${:-${(qqq)${(q)orig[1]}}}}"$'\2'
           fi
           for ((i = $#parts < shortenlen ? $#parts : shortenlen; i > 0; --i)); do
-            [[ $#parts[-i] == *$'\2' ]] && continue
+            [[ $parts[-i] == *$'\2' ]] && continue
             if [[ $orig[-i] == *["~!#\`\$^&*()\\\"'<>?{}[]"]* ]]; then
               parts[-i]='${(Q)${:-'${(qqq)${(q)orig[-i]}}'}}'$'\2'
             else
@@ -2177,7 +2184,12 @@ prompt_dir() {
 
     local content="${(pj.$sep.)parts}"
     if (( _POWERLEVEL9K_DIR_HYPERLINK && _p9k_term_has_href )) && [[ $_p9k__cwd == /* ]]; then
-      _p9k_url_escape $_p9k__cwd
+      local url=$_p9k__cwd
+      if [[ $_p9k_os == Windows && $url == (#b)(/cygdrive|)/([a-zA-Z])(/*|) ]]; then
+        # Native Windows programs can't resolve /c/... (MSYS2) or /cygdrive/c/... (Cygwin).
+        url=/$match[2]:${match[3]:-/}
+      fi
+      _p9k_url_escape $url
       local header=$'%{\e]8;;file://'$_p9k__ret$'\a%}'
       local footer=$'%{\e]8;;\a%}'
       if (( expand )); then
@@ -2220,6 +2232,12 @@ _p9k_prompt_docker_machine_init() {
 ################################################################
 # GO prompt
 prompt_go_version() {
+  # With GOTOOLCHAIN=auto (the default) go switches to, and downloads, the toolchain requested
+  # by go.mod/go.work in the current directory. The output is cached regardless of the
+  # directory, so pin the toolchain that applies outside of modules.
+  local toolchain=${GOTOOLCHAIN%+(auto|path)}
+  [[ $toolchain == (|auto|path) ]] && toolchain=local
+  local -x GOTOOLCHAIN=$toolchain
   _p9k_cached_cmd 0 '' go version || return
   [[ $_p9k__ret == (#b)*go([[:digit:].]##)* ]] || return
   local v=$match[1]
@@ -2229,7 +2247,7 @@ prompt_go_version() {
       if [[ -d $HOME/go ]]; then
         p=$HOME/go
       else
-        p="$(go env GOPATH 2>/dev/null)" && [[ -n $p ]] || return
+        _p9k_cached_cmd 0 '' go env GOPATH && p=$_p9k__ret && [[ -n $p ]] || return
       fi
     fi
     if [[ $_p9k__cwd/ != $p/* && $_p9k__cwd_a/ != $p/* ]]; then
@@ -2258,29 +2276,44 @@ prompt_package() {
   local file=$_p9k__parent_dirs[$?]/package.json
   if ! _p9k_cache_stat_get $0 $file; then
     () {
-      local data field
+      # Work with bytes so that $data[pos] is O(1), and move pos through data instead of cutting
+      # tokens off its front, which would copy the rest of the file for every token.
+      setopt local_options no_multi_byte
+      local data field s
+      local -a match mbegin mend
       local -A found
       # Redneck json parsing. Yields correct results for any well-formed json document.
       # Produces random garbage for invalid json.
       { data="$(<$file)" || return } 2>/dev/null
-      data=${${data//$'\r'}##[[:space:]]#}
-      [[ $data == '{'* ]] || return
-      data[1]=
-      local -i depth=1
+      data=${data//$'\r'}
+      local -i pos=1 depth=0 n
       while true; do
-        data=${data##[[:space:]]#}
-        [[ -n $data ]] || return
-        case $data[1] in
-          '{'|'[')      data[1]=; (( ++depth ));;
-          '}'|']')      data[1]=; (( --depth > 0 )) || return;;
-          ':')          data[1]=;;
-          ',')          data[1]=; field=;;
-          [[:alnum:].+-]) data=${data##[[:alnum:].+-]#};;
+        while true; do
+          [[ $data[pos,pos+63] == (#b)([[:space:]]#)* ]]
+          (( pos += mend[1], mend[1] == 64 )) || break
+        done
+        (( depth )) || [[ $data[pos] == '{' ]] || return
+        case $data[pos] in
+          '')           return 1;;
+          '{'|'[')      (( ++pos, ++depth ));;
+          '}'|']')      (( ++pos, --depth > 0 )) || return;;
+          ':')          (( ++pos ));;
+          ',')          (( ++pos )); field=;;
+          [[:alnum:].+-])
+            while true; do
+              [[ $data[pos,pos+63] == (#b)([[:alnum:].+-]#)* ]]
+              (( pos += mend[1], mend[1] == 64 )) || break
+            done
+          ;;
           '"')
-            local tail=${data##\"([^\"\\]|\\?)#}
-            [[ $tail == '"'* ]] || return
-            local s=${data:1:-$#tail}
-            data=${tail:1}
+            # Grow the window until it contains the closing quote.
+            n=64
+            until [[ $data[pos+1,pos+n] == (#b)(([^\"\\]|\\?)#)\"* ]]; do
+              (( pos + n < $#data )) || return
+              (( n *= 4 ))
+            done
+            s=$match[1]
+            (( pos += $#s + 2 ))
             (( depth == 1 )) || continue
             if [[ -z $field ]]; then
               field=${s:-x}
@@ -2309,6 +2342,17 @@ prompt_package() {
 ################################################################
 # Detection for virtualization (systemd based systems only)
 prompt_detect_virt() {
+  # Virtualization doesn't change within a session, so detect it only once.
+  if (( ! $+_p9k__detect_virt )); then
+    _p9k_detect_virt
+    typeset -g _p9k__detect_virt=$_p9k__ret
+  fi
+  if [[ -n $_p9k__detect_virt ]]; then
+    _p9k_prompt_segment "$0" "$_p9k_color1" "yellow" '' 0 '' "${_p9k__detect_virt//\%/%%}"
+  fi
+}
+
+_p9k_detect_virt() {
   local virt="$(systemd-detect-virt 2>/dev/null)"
   if [[ "$virt" == "none" ]]; then
     local -A root_stat pid1_stat
@@ -2336,9 +2380,7 @@ prompt_detect_virt() {
       fi
     fi
   fi
-  if [[ -n "${virt}" ]]; then
-    _p9k_prompt_segment "$0" "$_p9k_color1" "yellow" '' 0 '' "${virt//\%/%%}"
-  fi
+  _p9k__ret=$virt
 }
 
 _p9k_prompt_detect_virt_init() {
@@ -2382,17 +2424,21 @@ prompt_laravel_version() {
   _p9k_upglob artisan && return
   local dir=$_p9k__parent_dirs[$?]
   local app=$dir/vendor/laravel/framework/src/Illuminate/Foundation/Application.php
-  [[ -r $app ]] || return
-  if ! _p9k_cache_stat_get $0 $dir/artisan $app; then
-    local v="$(php $dir/artisan --version 2> /dev/null)"
-    v="${${(M)v:#Laravel Framework *}#Laravel Framework }"
-    # In some versions the output is colorized.
-    # https://github.com/romkatv/powerlevel10k/issues/2534
-    v=${${v#$'\e['<->m}%$'\e['<->m}
+  [[ -f $app && -r $app ]] || return
+  if ! _p9k_cache_stat_get $0 $app; then
+    # Don't run `php artisan --version`: it executes code from the project. Read the version
+    # that it prints from Application.php instead: const VERSION = 'x.y.z';
+    local v= line=
+    while IFS='' read -r line; do
+      if [[ $line == (#b)(|*[[:space:]])const[[:space:]]##VERSION[[:space:]]#=[[:space:]]#[\'\"]([^\'\"]##)[\'\"]* ]]; then
+        v=$match[2]
+        break
+      fi
+    done 2>/dev/null <$app
     _p9k_cache_stat_set "$v"
   fi
   [[ -n $_p9k__cache_val[1] ]] || return
-  _p9k_prompt_segment "$0" "maroon" "white" 'LARAVEL_ICON' 0 '' "${_p9k__cache_val[1]//\%/%%}"
+  _p9k_prompt_segment "$0" "maroon" "white" 'LARAVEL_ICON' 0 '' "${(V)_p9k__cache_val[1]//\%/%%}"
 }
 
 _p9k_prompt_laravel_version_init() {
@@ -2478,7 +2524,18 @@ _p9k_prompt_load_sync() {
 function _p9k_cached_cmd() {
   local cmd=$commands[$3]
   [[ -n $cmd ]] || return
-  if ! _p9k_cache_stat_get $0" ${(q)*}" $2 $cmd; then
+  (( $+_p9k__cached_cmd_ran )) || typeset -gA _p9k__cached_cmd_ran
+  local -i run=0
+  _p9k_cache_stat_get $0" ${(q)*}" $2 $cmd || run=1
+  local k=$_p9k__cache_key$'\0'$_p9k__cache_stat_meta
+  # A cached failure may have been caused by something other than the binary and the dep file
+  # (a missing library, a shim that wasn't set up yet), and the cache persists across shells.
+  # Retry it once per session rather than trusting it until the binary changes.
+  if (( ! run )) && [[ $_p9k__cache_val[1] == 0 && -z $_p9k__cached_cmd_ran[$k] ]]; then
+    run=1
+  fi
+  if (( run )); then
+    _p9k__cached_cmd_ran[$k]=1
     local out
     if (( $1 )); then
       out="$($cmd "${@:4}" 2>&1)"
@@ -2691,6 +2748,7 @@ prompt_nodenv() {
   if [[ -n $NODENV_VERSION ]]; then
     (( ${_POWERLEVEL9K_NODENV_SOURCES[(I)shell]} )) || return
     local v=$NODENV_VERSION
+    _p9k_nodeenv_version_transform $v && v=$_p9k__ret
   else
     (( ${_POWERLEVEL9K_NODENV_SOURCES[(I)local|global]} )) || return
     _p9k__ret=
@@ -2756,7 +2814,8 @@ prompt_dotnet_version() {
     [[ -f $cfg ]] || return
     local json
     { json="$(<$cfg)" } 2>/dev/null || return
-    [[ $json == *'"paths"'* ]] && return
+    # The host decodes \uXXXX escapes in keys, so the key may be spelled with them.
+    [[ $json == *('"paths"'|'\u')* ]] && return
   fi
   _p9k_cached_cmd 0 "$cfg" dotnet --version || return
   _p9k_prompt_segment "$0" "magenta" "white" 'DOTNET_ICON' 0 '' "$_p9k__ret"
@@ -2802,7 +2861,8 @@ prompt_ram() {
 
 function _p9k_prompt_ram_init() {
   if [[ $_p9k_os == OSX && $+commands[vm_stat] == 0 ||
-        $_p9k_os == BSD && ! -r /var/run/dmesg.boot ||
+        $_p9k_os == BSD && $+commands[sysctl] == 0 && $+commands[vmstat] == 0 &&
+          ! -r /var/run/dmesg.boot ||
         $_p9k_os != (OSX|BSD) && ! -r /proc/meminfo ]]; then
     typeset -g "_p9k__segment_cond_${_p9k__prompt_side}[_p9k__segment_index]"='${:-}'
     return
@@ -2835,8 +2895,22 @@ _p9k_prompt_ram_async() {
       (( free_bytes *= _p9k__ram_pagesize ))
     ;;
     BSD)
-      local stat && stat="$(grep -F 'avail mem' /var/run/dmesg.boot 2>/dev/null)" || return
-      free_bytes=${${(A)=stat}[4]}
+      # dmesg.boot has the memory available at boot, which never changes. It's only a fallback.
+      local stat
+      local -i pagesize free_pages
+      if [[ $_p9k_uname == (FreeBSD|DragonFly) ]] && (( $+commands[sysctl] )) &&
+         stat="$(sysctl -n vm.stats.vm.v_free_count vm.stats.vm.v_inactive_count hw.pagesize 2>/dev/null)" &&
+         [[ $stat == (#b)[[:space:]]#(<->)[[:space:]]##(<->)[[:space:]]##(<->)[[:space:]]# ]]; then
+        (( free_bytes = (match[1] + match[2]) * match[3] ))
+      elif (( $+commands[vmstat] )) && stat="$(vmstat -s 2>/dev/null)" &&
+           [[ $stat =~ '([0-9]+) bytes per page' ]] && pagesize=match[1] &&
+           [[ $stat =~ '([0-9]+) pages free' ]] && free_pages=match[1] &&
+           [[ $stat =~ '([0-9]+) pages inactive' ]]; then
+        (( free_bytes = (free_pages + match[1]) * pagesize ))
+      else
+        stat="$(grep -F 'avail mem' /var/run/dmesg.boot 2>/dev/null)" || return
+        free_bytes=${${(A)=stat}[4]}
+      fi
     ;;
     *)
       [[ -r /proc/meminfo ]] || return
