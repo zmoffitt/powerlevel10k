@@ -200,7 +200,8 @@ function _p9k_read_word() {
   else
     local rest
     _p9k__ret=
-    { read _p9k__ret rest <$1 } 2>/dev/null
+    # -f: never block on a FIFO or a symlink to a device such as /dev/zero.
+    [[ -f $1 ]] && { read -r _p9k__ret rest <$1 } 2>/dev/null
     _p9k__ret=${_p9k__ret%$'\r'}
     _p9k__read_word_cache[$1]=$stat[1]:$_p9k__ret
   fi
@@ -252,14 +253,15 @@ function _p9k_fetch_cwd() {
 # Example: _p9k_glob 3 '*.csproj'
 function _p9k_glob() {
   local dir=$_p9k__parent_dirs[$1]
-  local cached=$_p9k__glob_cache[$dir/$2]
+  local key=$dir/$2$'\0'$3
+  local cached=$_p9k__glob_cache[$key]
   if [[ $cached == $_p9k__parent_mtimes[$1]:* ]]; then
     return ${cached##*:}
   fi
   local -a stat
   zstat -A stat +mtime -- $dir 2>/dev/null || stat=(-1)
   eval 'local files=($dir/$~2('$3'N:t))'
-  _p9k__glob_cache[$dir/$2]="$stat[1]:$#files"
+  _p9k__glob_cache[$key]="$stat[1]:$#files"
   return $#files
 }
 
@@ -271,7 +273,8 @@ function _p9k_glob() {
 #
 # Example: _p9k_upglob '*.csproj'
 function _p9k_upglob() {
-  local cached=$_p9k__upsearch_cache[$_p9k__cwd/$1]
+  local key=$_p9k__cwd/$1$'\0'$2
+  local cached=$_p9k__upsearch_cache[$key]
   if [[ -n $cached ]]; then
     if [[ $_p9k__parent_mtimes_s == ${cached% *}(| *) ]]; then
       return ${cached##* }
@@ -282,11 +285,11 @@ function _p9k_upglob() {
     local -i i
     for i in ${(@)${cached:|_p9k__parent_mtimes_i}%:*}; do
       _p9k_glob $i "$@" && continue
-      _p9k__upsearch_cache[$_p9k__cwd/$1]="${_p9k__parent_mtimes_i[1,i]} $i"
+      _p9k__upsearch_cache[$key]="${_p9k__parent_mtimes_i[1,i]} $i"
       return i
     done
     if (( i != last_idx )); then
-      _p9k__upsearch_cache[$_p9k__cwd/$1]="${_p9k__parent_mtimes_i[1,$#cached]} $last_idx"
+      _p9k__upsearch_cache[$key]="${_p9k__parent_mtimes_i[1,$#cached]} $last_idx"
       return last_idx
     fi
     i=$(($#cached + 1))
@@ -295,10 +298,10 @@ function _p9k_upglob() {
   fi
   for ((; i <= $#_p9k__parent_mtimes; ++i)); do
     _p9k_glob $i "$@" && continue
-    _p9k__upsearch_cache[$_p9k__cwd/$1]="${_p9k__parent_mtimes_i[1,i]} $i"
+    _p9k__upsearch_cache[$key]="${_p9k__parent_mtimes_i[1,i]} $i"
     return i
   done
-  _p9k__upsearch_cache[$_p9k__cwd/$1]="$_p9k__parent_mtimes_s 0"
+  _p9k__upsearch_cache[$key]="$_p9k__parent_mtimes_s 0"
   return 0
 }
 
@@ -401,8 +404,8 @@ _p9k_segment_in_use() {
 #
 # Limitations:
 #
-#   * Calling _p9k_cache_set without arguments clears the cache entry. Subsequent calls to
-#     _p9k_cache_get for the same key will return an error.
+#   * Calling _p9k_cache_set without arguments caches an empty result. Subsequent calls to
+#     _p9k_cache_get for the same key will succeed with _p9k__cache_val=("").
 #   * There must be no intervening _p9k_cache_get calls between the associated _p9k_cache_get
 #     and _p9k_cache_set.
 _p9k_cache_set() {
@@ -459,10 +462,13 @@ _p9k_cache_stat_get() {
     fi
   fi
 
+  # Hash only regular files: md5 would block on a FIFO or /dev/zero, and without
+  # operands it would read the terminal.
+  local -a files=(${^@}(N-.))
   if (( $+commands[md5] )); then
-    _p9k__cache_stat_fprint="$(md5 -- $* 2>&1)"
+    (( $#files )) && _p9k__cache_stat_fprint="$(md5 -- $files 2>&1)"
   elif (( $+commands[md5sum] )); then
-    _p9k__cache_stat_fprint="$(md5sum -b -- $* 2>&1)"
+    (( $#files )) && _p9k__cache_stat_fprint="$(md5sum -b -- $files 2>&1)"
   else
     return 1
   fi
@@ -726,19 +732,19 @@ _p9k_left_prompt_segment() {
       p+="\${_p9k__n:=\${\${\$(($join)):#0}:+$((t+2))}}"                                      # 2
     fi
     if (( __p9k_sh_glob )); then
-      p+="\${_p9k__n:=\${\${(M)\${:-x$bg_color}:#x\$_p9k__bg}:+$((t+3))}}"                    # 3
-      p+="\${_p9k__n:=\${\${(M)\${:-x$bg_color}:#x\${_p9k__bg:-0}}:+$((t+3))}}"               # 3
+      p+="\${_p9k__n:=\${\${(M)\${:-x$bg_color}:#x\${~~_p9k__bg}}:+$((t+3))}}"                # 3
+      p+="\${_p9k__n:=\${\${(M)\${:-x$bg_color}:#x\${~~_p9k__bg:-0}}:+$((t+3))}}"             # 3
     else
-      p+="\${_p9k__n:=\${\${(M)\${:-x$bg_color}:#x(\$_p9k__bg|\${_p9k__bg:-0})}:+$((t+3))}}"  # 3
+      p+="\${_p9k__n:=\${\${(M)\${:-x$bg_color}:#x(\${~~_p9k__bg}|\${~~_p9k__bg:-0})}:+$((t+3))}}"  # 3
     fi
     p+="\${_p9k__n:=$((t+4))}"                                                                # 4
 
     _p9k_param $1 VISUAL_IDENTIFIER_EXPANSION '${P9K_VISUAL_IDENTIFIER}'
-    [[ $_p9k__ret == (|*[^\\])'$('* ]] && non_hermetic=1
+    [[ $_p9k__ret == (|*[^\\])('$('|'`')* ]] && non_hermetic=1
     local icon_exp_=${_p9k__ret:+\"$_p9k__ret\"}
 
     _p9k_param $1 CONTENT_EXPANSION '${P9K_CONTENT}'
-    [[ $_p9k__ret == (|*[^\\])'$('* ]] && non_hermetic=1
+    [[ $_p9k__ret == (|*[^\\])('$('|'`')* ]] && non_hermetic=1
     local content_exp_=${_p9k__ret:+\"$_p9k__ret\"}
 
     if [[ ( $icon_exp_ != '"${P9K_VISUAL_IDENTIFIER}"' && $icon_exp_ == *'$'* ) ||
@@ -763,7 +769,7 @@ _p9k_left_prompt_segment() {
     fi
 
     p+='${_p9k__c::='$content_exp_'}${_p9k__c::=${_p9k__c//'$'\r''}}'
-    p+='${_p9k__e::=${${_p9k__'${_p9k__line_index}l${${1#prompt_}%%[A-Z0-9_]#}'+00}:-'
+    p+='${_p9k__e::=${${_p9k__'${_p9k__line_index}l${_p9k__segment_name//-/_}'+00}:-'
     if (( has_icon == -1 )); then
       p+='${${(%):-$_p9k__c%1(l.1.0)}[-1]}${${(%):-$_p9k__v%1(l.1.0)}[-1]}}'
     else
@@ -974,11 +980,11 @@ _p9k_right_prompt_segment() {
     p+="\${_p9k__n:=$((t+4))}"                                                                      # 4
 
     _p9k_param $1 VISUAL_IDENTIFIER_EXPANSION '${P9K_VISUAL_IDENTIFIER}'
-    [[ $_p9k__ret == (|*[^\\])'$('* ]] && non_hermetic=1
+    [[ $_p9k__ret == (|*[^\\])('$('|'`')* ]] && non_hermetic=1
     local icon_exp_=${_p9k__ret:+\"$_p9k__ret\"}
 
     _p9k_param $1 CONTENT_EXPANSION '${P9K_CONTENT}'
-    [[ $_p9k__ret == (|*[^\\])'$('* ]] && non_hermetic=1
+    [[ $_p9k__ret == (|*[^\\])('$('|'`')* ]] && non_hermetic=1
     local content_exp_=${_p9k__ret:+\"$_p9k__ret\"}
 
     if [[ ( $icon_exp_ != '"${P9K_VISUAL_IDENTIFIER}"' && $icon_exp_ == *'$'* ) ||
@@ -1003,7 +1009,7 @@ _p9k_right_prompt_segment() {
     fi
 
     p+='${_p9k__c::='$content_exp_'}${_p9k__c::=${_p9k__c//'$'\r''}}'
-    p+='${_p9k__e::=${${_p9k__'${_p9k__line_index}r${${1#prompt_}%%[A-Z0-9_]#}'+00}:-'
+    p+='${_p9k__e::=${${_p9k__'${_p9k__line_index}r${_p9k__segment_name//-/_}'+00}:-'
     if (( has_icon == -1 )); then
       p+='${${(%):-$_p9k__c%1(l.1.0)}[-1]}${${(%):-$_p9k__v%1(l.1.0)}[-1]}}'
     else
@@ -1367,7 +1373,7 @@ _p9k_prompt_disk_usage_sync() {
 
 function _p9k_read_file() {
   _p9k__ret=''
-  [[ -n $1 ]] && IFS='' read -r _p9k__ret <$1
+  [[ -n $1 && -f $1 ]] && IFS='' read -r _p9k__ret <$1
   [[ -n $_p9k__ret ]]
 }
 
