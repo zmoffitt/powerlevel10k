@@ -1,9 +1,12 @@
 # Simple Bash prompt with Git status.
 
 # Source gitstatus.plugin.sh from $GITSTATUS_DIR or from the same directory
-# in which the current script resides if the variable isn't set.
-if [[ -n "${GITSTATUS_DIR-}" ]]; then
+# in which the current script resides if the variable isn't set. For backward
+# compatibility GITSTATUS_DIR may also be the path of gitstatus.plugin.sh itself.
+if [[ -n "${GITSTATUS_DIR-}" && -d "$GITSTATUS_DIR" ]]; then
   source "$GITSTATUS_DIR"/gitstatus.plugin.sh       || return
+elif [[ -n "${GITSTATUS_DIR-}" ]]; then
+  source "$GITSTATUS_DIR"                           || return
 elif [[ "${BASH_SOURCE[0]}" == */* ]]; then
   source "${BASH_SOURCE[0]%/*}/gitstatus.plugin.sh" || return
 else

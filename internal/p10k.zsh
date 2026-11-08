@@ -1253,11 +1253,32 @@ _p9k_aws_eb_env_prefetch() {
   typeset -g _p9k__aws_eb_env=
   (( $+commands[eb] )) || return
   _p9k_upglob .elasticbeanstalk -/ && return
-  local dir=$_p9k__parent_dirs[$?]
-  # The output depends on the git branch and the AWS profile/region. Credentials are not
-  # part of the key because the cache is persisted.
+  local -i idx=$?
+  local dir=$_p9k__parent_dirs[idx]
+  # The output depends on the git branch, so the HEAD of the repository that contains $dir is
+  # part of the cache files. The repository root may be above $dir (monorepo), and .git may be
+  # a file pointing elsewhere (worktree, submodule).
+  local head
+  for ((; idx <= $#_p9k__parent_dirs; ++idx)); do
+    _p9k_glob $idx .git && continue
+    head=$_p9k__parent_dirs[idx]/.git
+    if [[ -f $head ]]; then
+      if _p9k_read_file $head && [[ $_p9k__ret == 'gitdir: '* ]]; then
+        local gitdir=${${_p9k__ret#gitdir: }%$'\r'}
+        [[ $gitdir == /* ]] || gitdir=$_p9k__parent_dirs[idx]/$gitdir
+        head=$gitdir/HEAD
+      else
+        head=
+      fi
+    else
+      head+=/HEAD
+    fi
+    break
+  done
+  # The output also depends on the AWS profile/region. Credentials are not part of the key
+  # because the cache is persisted.
   local key="aws_eb_env:$AWS_EB_PROFILE:$AWS_PROFILE:$AWS_DEFAULT_PROFILE:$AWS_REGION:$AWS_DEFAULT_REGION"
-  if _p9k_cache_stat_get $key $dir/.elasticbeanstalk/config.yml $dir/.git/HEAD; then
+  if _p9k_cache_stat_get $key $dir/.elasticbeanstalk/config.yml $head; then
     _p9k__aws_eb_env=$_p9k__cache_val[1]
     return
   fi
@@ -1268,23 +1289,23 @@ _p9k_aws_eb_env_prefetch() {
     kvs+=("$k=${(P)k}")
   done
   _p9k_worker_invoke aws_eb_env \
-    "_p9k_prompt_aws_eb_env_compute ${(q)key} ${(q)dir} ${(q)commands[eb]} ${(@q)kvs}"
+    "_p9k_prompt_aws_eb_env_compute ${(q)key} ${(q)dir} ${(q)head} ${(q)commands[eb]} ${(j: :)${(@q)kvs}}"
 }
 
 _p9k_prompt_aws_eb_env_compute() {
-  _p9k_worker_async "_p9k_prompt_aws_eb_env_async ${(@q)@}" _p9k_prompt_aws_eb_env_sync
+  _p9k_worker_async "_p9k_prompt_aws_eb_env_async ${(j: :)${(@q)@}}" _p9k_prompt_aws_eb_env_sync
 }
 
 _p9k_prompt_aws_eb_env_async() {
-  local key=$1 dir=$2 eb=$3 env kv
-  shift 3
+  local key=$1 dir=$2 head=$3 eb=$4 env kv
+  shift 4
   unset -m 'AWS_*'
   for kv; do export -- $kv; done
   if builtin cd -q -- $dir 2>/dev/null; then
     env="$($eb list </dev/null 2>/dev/null)" || env=
   fi
   env="${${(@M)${(@f)env}:#\* *}#\* }"
-  print -r -- "_p9k_prompt_aws_eb_env_update ${(q)key} ${(q)dir} ${(q)env}"
+  print -r -- "_p9k_prompt_aws_eb_env_update ${(q)key} ${(q)dir} ${(q)head} ${(q)env}"
 }
 
 _p9k_prompt_aws_eb_env_sync() {
@@ -1292,8 +1313,8 @@ _p9k_prompt_aws_eb_env_sync() {
 }
 
 _p9k_prompt_aws_eb_env_update() {
-  if ! _p9k_cache_stat_get $1 $2/.elasticbeanstalk/config.yml $2/.git/HEAD; then
-    _p9k_cache_stat_set "$3"
+  if ! _p9k_cache_stat_get $1 $2/.elasticbeanstalk/config.yml $3; then
+    _p9k_cache_stat_set "$4"
   fi
   local old=$_p9k__aws_eb_env
   _p9k_aws_eb_env_prefetch
@@ -1986,10 +2007,10 @@ prompt_dir() {
       (( shortenlen >= 0 )) || shortenlen=1
       # Raw names of the directories in parts. They cannot be decoded from p because a literal
       # '^' or '\' in a name is indistinguishable from the escapes added by (V), so take them
-      # from the end of $_p9k__cwd instead.
+      # from the end of $_p9k__cwd instead: parts[2,-1] are its last $#parts-1 components.
       local rparts=("${(@s:/:)_p9k__cwd}")
       if (( $#parts > 1 )); then
-        rparts=("$parts[1]" "${(@)rparts[2-$#parts,-1]}")
+        rparts=("$parts[1]" "${(@)rparts[1-$#parts,-1]}")
       else
         rparts=("$parts[1]")
       fi
@@ -2296,8 +2317,9 @@ _p9k_prompt_docker_machine_init() {
 prompt_go_version() {
   # With GOTOOLCHAIN=auto (the default) go switches to, and downloads, the toolchain requested
   # by go.mod/go.work in the current directory. The output is cached regardless of the
-  # directory, so pin the toolchain that applies outside of modules.
-  local toolchain=${GOTOOLCHAIN%+(auto|path)}
+  # directory, so pin the toolchain that applies outside of modules. Keep <name>+path as is:
+  # a bare <name> would let go download it when it's not installed.
+  local toolchain=${GOTOOLCHAIN%+auto}
   [[ $toolchain == (|auto|path) ]] && toolchain=local
   local -x GOTOOLCHAIN=$toolchain
   _p9k_cached_cmd 0 '' go version || return
@@ -2309,7 +2331,16 @@ prompt_go_version() {
       if [[ -d $HOME/go ]]; then
         p=$HOME/go
       else
-        _p9k_cached_cmd 0 '' go env GOPATH && p=$_p9k__ret && [[ -n $p ]] || return
+        # `go env -w GOPATH=...` writes to the go env file, so the output depends on it.
+        local goenv=$GOENV
+        if [[ -z $goenv ]]; then
+          if [[ $_p9k_os == OSX ]]; then
+            goenv=$HOME/'Library/Application Support/go/env'
+          else
+            goenv=${XDG_CONFIG_HOME:-$HOME/.config}/go/env
+          fi
+        fi
+        _p9k_cached_cmd 0 "$goenv" go env GOPATH && p=$_p9k__ret && [[ -n $p ]] || return
       fi
     fi
     if [[ $_p9k__cwd/ != $p/* && $_p9k__cwd_a/ != $p/* ]]; then
@@ -3888,13 +3919,15 @@ function +vi-git-aheadbehind() {
 
 # Branch, tag, remote and bookmark names come from the repository and may contain `%`.
 # vcs_info doesn't escape them, so the hooks below do. hook_com[p9k-escaped] records that
-# hook_com[branch] has been dealt with so that it doesn't get escaped twice.
+# hook_com[branch] has been dealt with so that it doesn't get escaped twice. It is 2 when
+# hook_com[branch] starts with the escaped branch_orig, 1 otherwise.
 function _p9k_vcs_info_escape_branch() {
   [[ -n ${hook_com[p9k-escaped]} ]] && return 0
   hook_com[p9k-escaped]=1
   # Leave the branch alone if a user hook has rewritten it.
   if [[ ${hook_com[branch]} == "${hook_com[branch_orig]}" ]]; then
     hook_com[branch]=${hook_com[branch]//\%/%%}
+    hook_com[p9k-escaped]=2
   fi
   return 0
 }
@@ -3916,12 +3949,21 @@ function +vi-p9k-escape-branch-format() {
 }
 
 function +vi-git-remotebranch() {
-  local remote
+  local remote suffix
   local branch_name="${hook_com[branch]}"
   local pct=%
   if [[ -z ${hook_com[p9k-escaped]} ]]; then
     hook_com[p9k-escaped]=1
     [[ $branch_name == "${hook_com[branch_orig]}" ]] && pct=%%
+  elif [[ ${hook_com[p9k-escaped]} == 2 ]]; then
+    # An earlier hook (git-tagname) has escaped the branch and may have appended to it.
+    # Truncate the raw name and keep the already escaped suffix as is.
+    local escaped=${hook_com[branch_orig]//\%/%%}
+    if [[ $branch_name == "$escaped"* ]]; then
+      suffix=${branch_name:${#escaped}}
+      branch_name=${hook_com[branch_orig]}
+      pct=%%
+    fi
   fi
 
   # Are we on a remote-tracking branch?
@@ -3954,6 +3996,7 @@ function +vi-git-remotebranch() {
   if [[ -n ${remote} ]] && [[ "${remote#*/}" != "${branch_name}" ]] ; then
      hook_com[branch]+="$(print_icon 'VCS_REMOTE_BRANCH_ICON')${${remote// /}//\%/%%}"
   fi
+  hook_com[branch]+=$suffix
 }
 
 function +vi-git-tagname() {
@@ -4960,11 +5003,20 @@ prompt_java_version() {
   local -a file_deps
   if [[ $java == */shims/java ]]; then
     # jenv, asdf and mise shims pick the Java version per directory behind a fixed path.
+    # They keep walking up past files that don't pin Java (e.g. a .tool-versions with
+    # only nodejs), so every parent directory with a version file is a dependency.
     label+=" ${(q)JENV_VERSION} ${(q)ASDF_JAVA_VERSION} ${(q)MISE_JAVA_VERSION}"
-    file_deps=(${JENV_ROOT:-$HOME/.jenv}/version $HOME/.tool-versions)
-    _p9k_upglob '.java-version|.tool-versions' -.
-    local -i idx=$?
-    (( idx )) && file_deps+=($_p9k__parent_dirs[idx]/.java-version $_p9k__parent_dirs[idx]/.tool-versions)
+    local mise_cfg=${MISE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/mise}
+    file_deps=(
+      ${JENV_ROOT:-$HOME/.jenv}/version $HOME/.tool-versions
+      $mise_cfg/config.toml $mise_cfg/config.local.toml)
+    local -a names=(.java-version .tool-versions mise.toml .mise.toml mise.local.toml .mise.local.toml)
+    local -i i
+    for ((i = 1; i <= $#_p9k__parent_dirs; ++i)); do
+      _p9k_glob $i '(.java-version|.tool-versions|mise.toml|.mise.toml|mise.local.toml|.mise.local.toml)' -. &&
+        continue
+      file_deps+=($_p9k__parent_dirs[i]/$^names)
+    done
   fi
   if ! _p9k_cache_stat_get $label $java ${JAVA_HOME:+$JAVA_HOME/release} $file_deps; then
     local v
@@ -6135,11 +6187,20 @@ _p9k_prompt_haskell_stack_sync() {
 
 # Runs in the main shell with the version computed by _p9k_prompt_haskell_stack_async.
 # Returns 0 if the cache was updated.
+#
+# An empty fingerprint (none of the files exist) is cached like any other: the meta check matches
+# on the next prompt, so stack does not run again until one of the files appears.
 _p9k_haskell_stack_store() {
+  _p9k__cache_fprint_key=
   _p9k_cache_stat_get _p9k_haskell_stack_version $1 \
     ${STACK_ROOT:-~/.stack}/{pantry/pantry.sqlite3,stack.sqlite3} && return 1
-  [[ -n $_p9k__cache_stat_fprint ]] || return
-  _p9k_cache_stat_set "$2"
+  if [[ -n $_p9k__cache_fprint_key ]]; then
+    _p9k_cache_stat_set "$2"
+  else
+    # Neither md5 nor md5sum: _p9k_cache_stat_get returned before computing the fingerprint key,
+    # so cache by meta only (_p9k__cache_key is the meta key).
+    _p9k_cache_set "$_p9k__cache_stat_meta" "" "$2"
+  fi
 }
 
 prompt_haskell_stack() {
@@ -6609,7 +6670,7 @@ _p9k_set_instant_prompt() {
   [[ -n $RPROMPT ]] || unset RPROMPT
 }
 
-typeset -gri __p9k_instant_prompt_version=50
+typeset -gri __p9k_instant_prompt_version=51
 
 # Creates a new file next to $1 with an unpredictable name without following symlinks (the cache
 # directory may be writable by others) and opens it for writing. Stores the file descriptor in the
@@ -6776,7 +6837,7 @@ _p9k_dump_instant_prompt() {
           var=_p9k__${name}_i
           [[ $new == hide ]] && typeset -gi $var=3 || unset $var
         elif [[ $name == (#b)(<->)(*) ]]; then
-          var=_p9k__${match[1]}${${${${match[2]//\/}/#left/l}/#right/r}/#gap/g}
+          var=_p9k__${match[1]}${${${${${match[2]//\/}/#left/l}/#right/r}/#gap/g}//-/_}
           [[ $new == hide ]] && typeset -g $var= || unset $var
         fi
       done
@@ -7016,7 +7077,7 @@ _p9k_dump_instant_prompt() {
       if (( $+builtins[zf_chmod] )); then
         zf_chmod 600 $tmp.zwc             || return
       else
-        command chmod 600 -- $tmp.zwc     || return
+        command chmod 600 $tmp.zwc        || return
       fi
       zf_mv -f -- $tmp.zwc $root_file.zwc || return
     } always {
@@ -7121,7 +7182,7 @@ function _p9k_dump_state() {
     if (( $+builtins[zf_chmod] )); then
       zf_chmod 600 $tmp.zwc                   || return
     else
-      command chmod 600 -- $tmp.zwc           || return
+      command chmod 600 $tmp.zwc              || return
     fi
     zf_mv -f -- $tmp.zwc $__p9k_dump_file.zwc || return
   } always {
@@ -7776,6 +7837,8 @@ _p9k_init_vars() {
   typeset -ga _p9k_show_on_command
   typeset -g  _p9k__last_buffer
   typeset -ga _p9k__last_commands
+  typeset -gi _p9k__comp_active
+  typeset -g  _p9k__comp_widget
   typeset -gi  _p9k__fully_initialized
   typeset -gi _p9k__must_restore_prompt
   typeset -gi _p9k__restore_prompt_fd
@@ -8371,6 +8434,11 @@ function _p9k_on_widget_visual-line-mode()  { _p9k_check_visual_mode; }
 function _p9k_on_widget_deactivate-region() { _p9k_check_visual_mode; }
 
 function _p9k_on_widget_zle-line-init() {
+  _p9k__comp_active=0
+  # compinit resets compprefuncs, so (re-)register here. See _p9k_on_complete.
+  if (( ${#_p9k_show_on_command} && ${+compprefuncs} && ! ${${compprefuncs-}[(Ie)_p9k_on_complete]} )); then
+    compprefuncs+=(_p9k_on_complete)
+  fi
   (( _p9k__cursor_hidden )) || return 0
   _p9k__cursor_hidden=0
   print -rn -- $_p9k__cnorm
@@ -8447,6 +8515,18 @@ function _p9k_deschedule_redraw() {
   _p9k__redraw_fd=0
 }
 
+# Called by compsys (_main_complete) at the start of every completion. zle-line-pre-redraw runs
+# many times while a completion widget is still running (first match inserted, menu drawn, every
+# move through the menu) and LASTWIDGET there still names the widget that ran before it, so remember
+# that widget: as long as LASTWIDGET is unchanged, the completion widget has not returned yet.
+function _p9k_on_complete() {
+  eval "$__p9k_intro"
+  _p9k__comp_widget=${LASTWIDGET-}
+  _p9k__comp_active=1
+  # _main_complete empties compprefuncs before calling the functions in it.
+  (( ${compprefuncs[(Ie)_p9k_on_complete]} )) || compprefuncs+=(_p9k_on_complete)
+}
+
 function _p9k_widget_hook() {
   _p9k_deschedule_redraw
 
@@ -8475,10 +8555,12 @@ function _p9k_widget_hook() {
   _p9k_check_visual_mode
   local pat idx var w=$1
   [[ $w == (|zle-line-pre-redraw) ]] && w=${LASTWIDGET-}
+  (( _p9k__comp_active )) && [[ ${LASTWIDGET-} != "$_p9k__comp_widget" ]] && _p9k__comp_active=0
   # reset-prompt while the completion menu is shown wipes the menu (zsh-workers 2019/msg00161),
-  # so defer SHOW_ON_COMMAND updates until the next non-completion widget. KEYMAP is not
-  # menuselect in zle-line-pre-redraw, hence LASTWIDGET.
-  if [[ ${w#.} != (menu-select|menu-complete|reverse-menu-complete|menu-expand-or-complete|expand-or-complete|expand-or-complete-prefix|complete-word|_complete_*|fzf-tab-complete) ]]; then
+  # so defer SHOW_ON_COMMAND updates while a completion widget is running (_p9k__comp_active,
+  # set by compsys) and until the next non-completion widget. KEYMAP is not menuselect in
+  # zle-line-pre-redraw, hence LASTWIDGET.
+  if (( ! _p9k__comp_active )) && [[ ${w#.} != (menu-select|menu-complete|reverse-menu-complete|menu-expand-or-complete|expand-or-complete|expand-or-complete-prefix|complete-word|_complete_*|fzf-tab-complete) ]]; then
     for pat idx var in $_p9k_show_on_command; do
       if (( $P9K_COMMANDS[(I)$pat] )); then
         _p9k_display_segment $idx $var show
@@ -8510,6 +8592,8 @@ function _p9k_widget() {
 }
 
 function _p9k_widget_zle-line-pre-redraw-impl() {
+  # Notice that the completion widget has returned even if this redraw is skipped below.
+  (( _p9k__comp_active )) && [[ ${LASTWIDGET-} != "$_p9k__comp_widget" ]] && _p9k__comp_active=0
   (( __p9k_enabled )) && [[ $CONTEXT == start ]] || return 0
   ! (( ${+functions[p10k-on-post-widget]} || ${#_p9k_show_on_command} || _p9k__restore_prompt_fd || _p9k__redraw_fd )) &&
       [[ ${KEYMAP:-} != vicmd ]] &&
@@ -9073,7 +9157,8 @@ _p9k_must_init() {
   _p9k__param_pat+=$__p9k_force_term_shell_integration$'\1'${(q)TERM_PROGRAM}$'\1'
   _p9k__param_pat+=$'${#parameters[(I)POWERLEVEL9K_*]}\1${(%):-%n%#}\1$GITSTATUS_LOG_LEVEL\1'
   _p9k__param_pat+=$'$GITSTATUS_ENABLE_LOGGING\1$GITSTATUS_DAEMON\1$GITSTATUS_NUM_THREADS\1'
-  _p9k__param_pat+=$'$GITSTATUS_CACHE_DIR\1$GITSTATUS_AUTO_INSTALL\1${ZLE_RPROMPT_INDENT:-1}\1'
+  _p9k__param_pat+=$'$GITSTATUS_CACHE_DIR\1$GITSTATUS_AUTO_INSTALL\1$GITSTATUS_DOWNLOAD_MIRROR\1'
+  _p9k__param_pat+=$'${ZLE_RPROMPT_INDENT:-1}\1'
   _p9k__param_pat+=$'$__p9k_sh_glob\1$__p9k_ksh_arrays\1$ITERM_SHELL_INTEGRATION_INSTALLED\1'
   _p9k__param_pat+=$'${PROMPT_EOL_MARK-%B%S%#%s%b}\1$+commands[locale]\1$langinfo[CODESET]\1'
   _p9k__param_pat+=$'${(M)VTE_VERSION:#(<1-4602>|4801)}\1$DEFAULT_USER\1$P9K_SSH\1$+commands[uname]\1'
@@ -9409,6 +9494,7 @@ _p9k_init_vcs() {
     GITSTATUS_AUTO_INSTALL=${(q)GITSTATUS_AUTO_INSTALL}         \
       GITSTATUS_DAEMON=${(q)GITSTATUS_DAEMON}                   \
       GITSTATUS_CACHE_DIR=${(q)GITSTATUS_CACHE_DIR}             \
+      GITSTATUS_DOWNLOAD_MIRROR=${(q)GITSTATUS_DOWNLOAD_MIRROR} \
       GITSTATUS_NUM_THREADS=${(q)GITSTATUS_NUM_THREADS}         \
       GITSTATUS_LOG_LEVEL=${(q)GITSTATUS_LOG_LEVEL}             \
       GITSTATUS_ENABLE_LOGGING=${(q)GITSTATUS_ENABLE_LOGGING}   \
@@ -10006,7 +10092,7 @@ function p10k() {
             var=_p9k__${name}_i
             [[ $new == show ]] && unset $var || typeset -gi $var=3
           elif [[ $name == (#b)(<->)(*) ]]; then
-            var=_p9k__${match[1]}${${${${match[2]//\/}/#left/l}/#right/r}/#gap/g}
+            var=_p9k__${match[1]}${${${${${match[2]//\/}/#left/l}/#right/r}/#gap/g}//-/_}
             [[ $new == hide ]] && typeset -g $var= || unset $var
           fi
           if (( __p9k_reset_state > 0 )); then

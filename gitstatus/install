@@ -8,17 +8,34 @@ _gitstatus_install_daemon_found() {
   [ $# = 0 ] || "$@" "$daemon" "$version" "$installed"
 }
 
-# Succeeds if all arguments are owned by the current user or by root.
+# Succeeds if all arguments are owned by the current user or by root. Uses find if available
+# and falls back to ls otherwise.
 _gitstatus_install_owned() {
   local f
   for f in "$@"; do
-    [ -O "$f" ] || [ -n "$(command find -H "$f" -prune -user 0 2>/dev/null)" ] || return
+    [ -O "$f" ] && continue
+    if command -v find >/dev/null 2>&1; then
+      [ -n "$(command find -H "$f" -prune -user 0 2>/dev/null)" ] || return
+    else
+      [ "$(command ls -ldnL -- "$f" 2>/dev/null | { read -r mode links uid rest; echo "$uid"; })" = 0 ] || return
+    fi
   done
 }
 
-# Succeeds if any argument is writable by group or others.
+# Succeeds if any argument is writable by group or others. Uses find if available and falls
+# back to ls otherwise.
 _gitstatus_install_shared() {
-  [ -n "$(command find -H "$@" -prune \( -perm -020 -o -perm -002 \) 2>/dev/null)" ]
+  if command -v find >/dev/null 2>&1; then
+    [ -n "$(command find -H "$@" -prune \( -perm -020 -o -perm -002 \) 2>/dev/null)" ]
+    return
+  fi
+  local f
+  for f in "$@"; do
+    case "$(command ls -ldL -- "$f" 2>/dev/null)" in
+      ?????w*|????????w*) return 0;;
+    esac
+  done
+  return 1
 }
 
 _gitstatus_install_main() {
@@ -158,6 +175,18 @@ END
   local daemon="${GITSTATUS_DAEMON:-}"
   local cache_dir="${GITSTATUS_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/gitstatus}"
 
+  # Root shells that keep a regular user's HOME (e.g., `sudo -s` on macOS) would find the cache
+  # dir owned by that user. Neither the cached binary nor a download into that directory can be
+  # trusted, so use root's own cache instead.
+  if [ -z "${GITSTATUS_CACHE_DIR:-}" ] && [ -d "$cache_dir" ] && ! [ -O "$cache_dir" ] &&
+     [ "$(command id -u 2>/dev/null)" = 0 ]; then
+    local root_home=
+    eval 'root_home=~root'
+    if [ -n "$root_home" ] && [ -z "${root_home##/*}" ]; then
+      cache_dir="$root_home"/.cache/gitstatus
+    fi
+  fi
+
   if [ -z "$no_check" ]; then
     if [ -n "${daemon##/*}" ]; then
       >&"$e" echo "[gitstatus] error: GITSTATUS_DAEMON is not absolute path: $daemon"
@@ -218,8 +247,8 @@ END
         # A cached binary was verified when it was downloaded; only trust it if nobody else
         # could have replaced it since. Otherwise download (and verify) a fresh copy.
         if [ -n "$daemon" ]; then
-          if ! command -v find >/dev/null 2>&1; then
-            rejected="cannot check its permissions without find"
+          if ! command -v find >/dev/null 2>&1 && ! command -v ls >/dev/null 2>&1; then
+            rejected="cannot check its permissions without find or ls"
           elif [ ! -f "$daemon" ] || [ -h "$daemon" ]; then
             rejected="not a regular file"
           elif ! _gitstatus_install_owned "$daemon" "$cache_dir"; then

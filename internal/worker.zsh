@@ -24,6 +24,29 @@ function _p9k_worker_main() {
     _p9k_worker_jobs[$fd]=$EPOCHSECONDS$'\x1f'$sysparams[procsubstpid]
   }
 
+  # usage: _p9k_worker_kill_tree <pid>
+  #
+  # Sends SIGTERM to <pid> and all its descendants. The pid of an async job is its process
+  # substitution subshell; the commands doing the actual work are its children, which a plain
+  # `kill <pid>` would leave running (reparented to init) after a timeout.
+  function _p9k_worker_kill_tree() {
+    local -a pids=($1) lines words
+    local -A children
+    local line
+    lines=(${(f)"$(command ps -A -o pid= -o ppid= 2>/dev/null)"})
+    for line in $lines; do
+      words=(${=line})
+      (( $#words == 2 )) && children[$words[2]]+=" $words[1]"
+    done
+    # Collect the whole tree before killing anything: killed processes get reparented.
+    local -i i=1
+    while (( i <= $#pids && $#pids < 1000 )); do
+      pids+=(${=children[$pids[i]]})
+      (( ++i ))
+    done
+    kill -- $pids 2>/dev/null
+  }
+
   trap '' PIPE
 
   {
@@ -35,7 +58,7 @@ function _p9k_worker_main() {
     while true; do
       for fd in ${(k)_p9k_worker_jobs}; do
         (( EPOCHSECONDS - ${_p9k_worker_jobs[$fd]%%$'\x1f'*} >= _p9k_worker_timeout )) || continue
-        kill -- ${_p9k_worker_jobs[$fd]#*$'\x1f'} 2>/dev/null
+        _p9k_worker_kill_tree ${_p9k_worker_jobs[$fd]#*$'\x1f'}
         _p9k_worker_request_id=${_p9k_worker_fds[$fd]%%$'\x1f'*}
         unset "_p9k_worker_fds[$fd]" "_p9k_worker_jobs[$fd]"
         exec {fd}>&-

@@ -1030,6 +1030,11 @@ The command to update Powerlevel10k depends on how it was installed.
 
 To update, remove `~/powerlevel10k` on both machines and repeat steps 1-3.
 
+On machines with Internet access, gitstatus downloads `gitstatusd` from GitHub and, in parallel,
+from a mirror on gitee.com. To download only from GitHub, add `GITSTATUS_DOWNLOAD_MIRROR=0` to
+`~/.zshrc` next to the other `GITSTATUS_*` parameters you set (such as `GITSTATUS_CACHE_DIR` or
+`GITSTATUS_AUTO_INSTALL`).
+
 ### Where can I ask for help and report bugs?
 
 Report bugs in this fork by [opening an issue](https://github.com/zmoffitt/powerlevel10k/issues).

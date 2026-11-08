@@ -75,12 +75,13 @@ function gitstatus_start() {
   (( OPTIND == $# + 1 )) || { echo "usage: gitstatus_start [OPTION]..." >&2; return 1; }
 
   if [[ -n "${GITSTATUS_DAEMON_PID:-}" ]]; then
-    if [[ "${_GITSTATUS_CLIENT_PID:-}" == "$BASHPID" || "${_GITSTATUS_CLIENT_PID:-}" == "$$" ]]; then
+    if [[ "${_GITSTATUS_CLIENT_PID:-}" == "$BASHPID" || "${_GITSTATUS_CLIENT_PID:-}" == "$$" ||
+          "${_GITSTATUS_CLIENT_SHELL_PID:-}" == "$$" ]]; then
       return 0  # already started
     fi
     # Exported by the parent shell; we don't have its file descriptors.
     unset _GITSTATUS_REQ_FD _GITSTATUS_RESP_FD GITSTATUS_DAEMON_PID
-    unset _GITSTATUS_DIRTY_MAX_INDEX_SIZE _GITSTATUS_CLIENT_PID
+    unset _GITSTATUS_DIRTY_MAX_INDEX_SIZE _GITSTATUS_CLIENT_PID _GITSTATUS_CLIENT_SHELL_PID
   fi
 
   if [[ "${BASH_SOURCE[0]}" == */* ]]; then
@@ -267,6 +268,7 @@ function gitstatus_start() {
 
     _GITSTATUS_DIRTY_MAX_INDEX_SIZE=$max_dirty
     _GITSTATUS_CLIENT_PID="$BASHPID"
+    _GITSTATUS_CLIENT_SHELL_PID="$$"
   }
 
   if ! gitstatus_start_impl; then
@@ -284,7 +286,7 @@ function gitstatus_start() {
     return 1
   fi
 
-  export _GITSTATUS_CLIENT_PID _GITSTATUS_REQ_FD _GITSTATUS_RESP_FD GITSTATUS_DAEMON_PID
+  export _GITSTATUS_CLIENT_PID _GITSTATUS_CLIENT_SHELL_PID _GITSTATUS_REQ_FD _GITSTATUS_RESP_FD GITSTATUS_DAEMON_PID
   unset -f gitstatus_start_impl
 }
 
@@ -296,7 +298,7 @@ function gitstatus_stop() {
     [[ -z "${GITSTATUS_DAEMON_PID:-}" ]] || kill "$GITSTATUS_DAEMON_PID" &>/dev/null || true
   fi
   unset _GITSTATUS_REQ_FD _GITSTATUS_RESP_FD GITSTATUS_DAEMON_PID
-  unset _GITSTATUS_DIRTY_MAX_INDEX_SIZE _GITSTATUS_CLIENT_PID
+  unset _GITSTATUS_DIRTY_MAX_INDEX_SIZE _GITSTATUS_CLIENT_PID _GITSTATUS_CLIENT_SHELL_PID
 }
 
 # Retrieves status of a git repository from a directory under its working tree.
@@ -381,8 +383,10 @@ function gitstatus_query() {
   (( OPTIND == $# + 1 )) || { echo "usage: gitstatus_query [OPTION]..." >&2; return 1; }
 
   [[ -n "${GITSTATUS_DAEMON_PID-}" ]] || return  # not started
-  # Inherited from the parent shell without the file descriptors.
-  [[ "${_GITSTATUS_CLIENT_PID:-}" == "$BASHPID" || "${_GITSTATUS_CLIENT_PID:-}" == "$$" ]] || return
+  # Inherited from the parent shell without the file descriptors. Subshells of the
+  # shell that called gitstatus_start keep its $$ and inherit the descriptors.
+  [[ "${_GITSTATUS_CLIENT_PID:-}" == "$BASHPID" || "${_GITSTATUS_CLIENT_PID:-}" == "$$" ||
+     "${_GITSTATUS_CLIENT_SHELL_PID:-}" == "$$" ]] || return
 
   local req_id="$RANDOM.$RANDOM.$RANDOM.$RANDOM"
   # $(pwd -P) forks and strips trailing newlines from the directory name. Avoid it if possible.
@@ -502,5 +506,6 @@ function gitstatus_query() {
 # If it returns non-zero, gitstatus_query is guaranteed to return non-zero.
 function gitstatus_check() {
   [[ -n "${GITSTATUS_DAEMON_PID:-}" ]] &&
-    [[ "${_GITSTATUS_CLIENT_PID:-}" == "$BASHPID" || "${_GITSTATUS_CLIENT_PID:-}" == "$$" ]]
+    [[ "${_GITSTATUS_CLIENT_PID:-}" == "$BASHPID" || "${_GITSTATUS_CLIENT_PID:-}" == "$$" ||
+       "${_GITSTATUS_CLIENT_SHELL_PID:-}" == "$$" ]]
 }

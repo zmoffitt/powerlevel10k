@@ -251,7 +251,9 @@ function _p9k_parse_buffer() {
           n=${(S)token/#(<->|([[:alpha:]_][[:IDENT:]]#(|'['*[^\\](\\\\)#']')))(|'+')=}
           if [[ $n == ('`'[^'`']##'`'|'"`'[^'`']##'`"'|'$('[^')']##')'|'"$('[^')']##')"'|['<>=']'('[^')']##')') ]]; then
             s=${${n##('"'|)(['$<>']|)?}%%?('"'|)}
-            (( ic )) && v=(';' ${(Z+C+)s}) || v=(';' ${(z)s})
+            # Separate with a newline rather than ';' so that a here-document delimiter on the
+            # last line of the buffer is still followed by a newline token.
+            (( ic )) && v=($'\n' ${(Z+C+)s}) || v=($'\n' ${(z)s})
             tokens+=("${v[@]}")
             # Tokens appended at the end shift the positions recorded for aliases.
             for (( i = 1; i <= $#alp; ++i )); do
