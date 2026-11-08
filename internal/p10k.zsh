@@ -2327,7 +2327,11 @@ prompt_go_version() {
   if [[ $toolchain == local ]]; then
     _p9k_cached_cmd 0 '' go version || return
   else
-    _p9k_cached_cmd 0 '' go -C / version || return
+    # GOPROXY=off: a pinned toolchain that is installed (PATH or module cache) is used, a
+    # missing one fails at once instead of being downloaded from the prompt. Fall back to
+    # plain `go version` for go < 1.20, which has no -C (and ignores GOTOOLCHAIN anyway).
+    local -x GOPROXY=off
+    _p9k_cached_cmd 0 '' go -C / version || _p9k_cached_cmd 0 '' go version || return
   fi
   [[ $_p9k__ret == (#b)*go([[:digit:].]##)* ]] || return
   local v=$match[1]
@@ -5028,12 +5032,15 @@ prompt_java_version() {
     # touch the parent directory) and per-environment files. These are always dependencies.
     local -a mise_names=(
       .config/mise.toml .config/mise/config.toml mise/config.toml .mise/config.toml
-      .config/mise.local.toml .config/mise/config.local.toml mise/config.local.toml .mise/config.local.toml)
+      .config/mise.local.toml .config/mise/config.local.toml mise/config.local.toml .mise/config.local.toml
+      .config/mise/mise.toml .config/mise/mise.local.toml)
     local mise_env
     for mise_env in ${(s:,:)MISE_ENV}; do
       mise_names+=(
         mise.$mise_env.toml .mise.$mise_env.toml mise.$mise_env.local.toml .mise.$mise_env.local.toml
-        .config/mise.$mise_env.toml .config/mise/config.$mise_env.toml mise/config.$mise_env.toml .mise/config.$mise_env.toml)
+        .config/mise.$mise_env.toml .config/mise/config.$mise_env.toml mise/config.$mise_env.toml .mise/config.$mise_env.toml
+        .config/mise.$mise_env.local.toml .config/mise/config.$mise_env.local.toml
+        mise/config.$mise_env.local.toml .mise/config.$mise_env.local.toml)
       file_deps+=($mise_cfg/config.$mise_env.toml $mise_cfg/config.$mise_env.local.toml)
     done
     local -i i
