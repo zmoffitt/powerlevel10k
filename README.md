@@ -45,7 +45,10 @@ Distribution packages ([Homebrew](#homebrew), [Arch Linux](#arch-linux),
 not this fork.
 
 The [gitstatus](gitstatus) directory is a subtree of
-[romkatv/gitstatus](https://github.com/romkatv/gitstatus) and is kept unmodified. Screenshots and
+[romkatv/gitstatus](https://github.com/romkatv/gitstatus) and carries a few fork-specific fixes
+(stricter verification of downloaded and cached gitstatusd binaries, fd handling in
+`gitstatus_stop`, small source fixes); do not re-sync it from upstream without reapplying them.
+Screenshots and
 the [recommended font](#meslo-nerd-font-patched-for-powerlevel10k) are served from upstream's
 [powerlevel10k-media](https://github.com/romkatv/powerlevel10k-media) repository.
 
@@ -374,7 +377,7 @@ You can enable as many segments as you like. It won't slow down your prompt or Z
 | `nodeenv` | node.js environment from [nodeenv](https://github.com/ekalinin/nodeenv) |
 | `nodenv` | node.js environment from [nodenv](https://github.com/nodenv/nodenv) |
 | `node_version` | [node.js](https://nodejs.org/) version |
-| `nordvpn` | [nordvpn](https://nordvpn.com/) connection status |
+| `nordvpn` | [nordvpn](https://nordvpn.com/) connection status (currently disabled: it shows nothing, see upstream [#2860](https://github.com/romkatv/powerlevel10k/issues/2860)) |
 | `nvm` | node.js environment from [nvm](https://github.com/nvm-sh/nvm) |
 | `os_icon` | your OS logo (apple for macOS, swirl for debian, etc.) |
 | `package` | `name@version` from [package.json](https://docs.npmjs.com/files/package.json) |
@@ -1518,7 +1521,7 @@ https://www.reddit.com/r/zsh/comments/eg49ff/powerlevel10k_prompt_history_exit_c
 
 ### What is the minimum supported Zsh version?
 
-Zsh 5.3 or newer should work. Fast startup requires Zsh >= 5.4.
+Zsh 5.1 or newer is required (5.3 or newer recommended). Fast startup requires Zsh >= 5.4.
 
 ### How were these screenshots and animated gifs created?
 
@@ -1670,7 +1673,7 @@ running Zsh locally, Google "set UTF-8 locale in *your OS*".
 ### Cursor is in the wrong place
 
 Type `echo '\u276F'`. If you get an error saying "zsh: character not in range", see the
-[previous section](#zsh-character-not-in-range).
+[previous section](#error-character-not-in-range).
 
 If the `echo` command prints `❯` but the cursor is still in the wrong place, install
 [the recommended font](#meslo-nerd-font-patched-for-powerlevel10k) and run
