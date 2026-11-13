@@ -5495,10 +5495,11 @@ _p9k_prompt_terraform_init() {
 
 function prompt_terraform_version() {
   local v cfg terraform=${commands[terraform]}
+  local tenv_cfg="${TENV_ROOT:-$HOME/.tenv}/Terraform/version"
   _p9k_upglob .terraform-version -. || cfg=$_p9k__parent_dirs[$?]/.terraform-version
   # tfenv's global version file (`tfenv use`); missing files are harmless in the stat list.
   local tfenv_ver=${TFENV_CONFIG_DIR:-${TFENV_ROOT:-${terraform:A:h:h}}}/version
-  if _p9k_cache_stat_get $0.$TFENV_TERRAFORM_VERSION $terraform $cfg $tfenv_ver; then
+  if _p9k_cache_stat_get $0.$TFENV_TERRAFORM_VERSION $terraform $cfg $tfenv_ver $tenv_cfg; then
     v=$_p9k__cache_val[1]
   else
     v=${${"$(terraform --version 2>/dev/null)"#Terraform v}%%$'\n'*} || v=
